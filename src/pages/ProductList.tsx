@@ -21,7 +21,7 @@ export interface ShoppingOrder {
   so_amount: number;
   so_unit: string;
   picking_status: string;
-  emp_code_floor_picking: string | null;
+  emp_code_floor_picking: string;
   so_picking_time: string | null;
   product: Product;
 }
@@ -58,6 +58,84 @@ function ProductList() {
   const [showInput, setShowInput] = useState(false);
   const [, setIsFiltered] = useState(false)
   // const handleDoubleClick = useDoubleClick();
+
+  // const mockData: PickingData = {
+  //   mem_code: "EMP001",
+  //   mem_name: "สมชาย ใจดี",
+  //   emp_code_picking: "EMP001",
+  //   all_sh_running: ["SH001", "SH002"],
+  //   shoppingHeads: [
+  //     {
+  //       sh_running: "SH001",
+  //       shoppingOrders: [
+  //         {
+  //           so_running: "SO001",
+  //           so_amount: 3,
+  //           so_unit: "กล่อง",
+  //           picking_status: "pending",
+  //           emp_code_floor_picking: "1",
+  //           so_picking_time: null,
+  //           product: {
+  //             product_code: "P001",
+  //             product_name: "น้ำดื่มขวดเล็ก",
+  //             product_image_url: "https://via.placeholder.com/100",
+  //             product_barcode: "1234567890123",
+  //             product_floor: "1",
+  //             product_addr: "แถว A ชั้น 1",
+  //             product_stock: "10",
+  //             product_unit: "ขวด",
+  //           }
+  //         },
+  //         {
+  //           so_running: "SO002",
+  //           so_amount: 5,
+  //           so_unit: "ชิ้น",
+  //           picking_status: "picking",
+  //           emp_code_floor_picking: "1",
+  //           so_picking_time: "2024-01-01T12:00:00Z",
+  //           product: {
+  //             product_code: "P002",
+  //             product_name: "สบู่สมุนไพร",
+  //             product_image_url: "https://via.placeholder.com/100",
+  //             product_barcode: "9876543210987",
+  //             product_floor: "1",
+  //             product_addr: "แถว B ชั้น 1",
+  //             product_stock: "7",
+  //             product_unit: "ก้อน",
+  //           }
+  //         }
+  //       ]
+  //     },
+  //     {
+  //       sh_running: "SH002",
+  //       shoppingOrders: [
+  //         {
+  //           so_running: "SO003",
+  //           so_amount: 2,
+  //           so_unit: "แพ็ค",
+  //           picking_status: "หมด",
+  //           emp_code_floor_picking: "2",
+  //           so_picking_time: null,
+  //           product: {
+  //             product_code: "P003",
+  //             product_name: "แชมพูเด็ก",
+  //             product_image_url: "https://via.placeholder.com/100",
+  //             product_barcode: "4567890123456",
+  //             product_floor: "2",
+  //             product_addr: "แถว C ชั้น 2",
+  //             product_stock: "0",
+  //             product_unit: "ขวด",
+  //           }
+  //         }
+  //       ]
+  //     }
+  //   ]
+  // };
+
+  // useEffect(() => {
+  //   setListproduct(mockData); // ใช้ mockData แทน data ที่มาจาก socket
+  //   setLoading(false);
+  // }, []);
 
   useEffect(() => {
     const token = sessionStorage.getItem("access_token");
@@ -172,8 +250,8 @@ function ProductList() {
     setIsFiltered(!!search || !!selectedFloor);
   }, [search, selectedFloor]);
 
-  console.log("search " + search);
-  console.log("selectedFloor " + selectedFloor);
+  // console.log("search " + search);
+  // console.log("selectedFloor " + selectedFloor);
 
   const setButton = () => {
     setSearch('');
@@ -313,6 +391,25 @@ function ProductList() {
                   <p className="flex justify-center text-white">{userInfo?.floor_picking || "-"}</p>
                 </div>
                 <div className="flex justify-center px-3 text-white">
+                  <button onClick={() => navigate("/order-list")} className="w-full mx-auto flex py-2 active:bg-red-600 scale-95 transition cursor-pointer text-center items-center font-light rounded-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-9 rounded-full mr-1 ml-1 p-1 text-white">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                    </svg>
+                    รายการคำสั่งซื้อ
+                  </button>
+                </div>
+                <div className="flex justify-center px-3 text-white">
+                  <button onClick={() => navigate("/report")} className="w-full mx-auto flex py-2 active:bg-red-600 scale-95 transition cursor-pointer text-center items-center font-light rounded-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-9 rounded-full mr-1 ml-1 p-1 text-white">
+                      <path strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M3 3v1.5M3 21v-6m0 0 2.77-.693a9 9 0 0 1 6.208.682l.108.054a9 9 0 0 0 6.086.71l3.114-.732a48.524 48.524 0 0 1-.005-10.499l-3.11.732a9 9 0 0 1-6.085-.711l-.108-.054a9 9 0 0 0-6.208-.682L3 4.5M3 15V4.5"
+                      />
+                    </svg>
+                    สถิติพนักงาน
+                  </button>
+                </div>
+                <div className=" px-3 text-white">
                   <button onClick={Btnlogout} className="w-full mx-auto flex py-2 hover:bg-red-600 cursor-pointer text-center items-center font-light rounded-sm">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none"
                       viewBox="0 0 24 24" strokeWidth={1.2} stroke="currentColor"
@@ -341,6 +438,7 @@ function ProductList() {
               head.shoppingOrders.some(orderItem => {
                 const matchFloor = selectedFloor
                   ? (orderItem.product.product_floor || '1') === selectedFloor
+
                   : true;
 
                 const matchSearch =
@@ -363,6 +461,7 @@ function ProductList() {
                         .filter((orderItem) => {
                           const matchFloor = selectedFloor
                             ? (orderItem.product.product_floor || '1') === selectedFloor
+
                             : true
 
                           const matchSearch = !search || orderItem.product.product_name.includes(search) || orderItem.so_running.includes(search) || orderItem.product.product_code.includes(search);

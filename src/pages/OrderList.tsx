@@ -71,6 +71,7 @@ const OrderList = () => {
 
   console.log("selectedFloor", selectedFloor);
 
+
   const togglePopup = (id: string) => {
     setOpenPopupId((prev) => (prev === id ? null : id));
   };
@@ -85,6 +86,112 @@ const OrderList = () => {
     setSelectroute("all")
     console.log("showInput " + showInput);
   };
+
+  // const mockData: orderList[] = [
+  //   {
+  //     "all_sh_running": ["SH202505070001", "SH202505070002"],
+  //     "emp": {
+  //       "emp_nickname": "สมชาย"
+  //     },
+  //     "emp_code": "EMP001",
+  //     "emp_code_picking": "EMP002",
+  //     "emp_picking": {
+  //       "emp_nickname": "สมหญิง"
+  //     },
+  //     "mem_code": "MEM001",
+  //     "mem_id": 12345,
+  //     "mem_name": "ลูกค้า ทดสอบ",
+  //     "picking_status": "pending",
+  //     "province": "สงขลา",
+  //     "shoppingHeads": [
+  //       {
+  //         "sh_id": 1,
+  //         "sh_running": "SH202505070001",
+  //         "sh_datetime": "2025-05-07T10:00:00Z",
+  //         "shoppingOrders": [
+  //           {
+  //             "picking_status": "pending",
+  //             "product": {
+  //               "product_floor": "3"
+  //             },
+  //             "so_procode": "PROD001",
+  //             "so_running": "SO001"
+  //           },
+  //           {
+  //             "picking_status": "pending",
+  //             "product": {
+  //               "product_floor": "2"
+  //             },
+  //             "so_procode": "PROD002",
+  //             "so_running": "SO002"
+  //           }
+  //         ]
+  //       },
+  //       {
+  //         "sh_id": 2,
+  //         "sh_running": "SH202505070002",
+  //         "sh_datetime": "2025-05-07T11:30:00Z",
+  //         "shoppingOrders": [
+  //           {
+  //             "picking_status": "pending",
+  //             "product": {
+  //               "product_floor": "3"
+  //             },
+  //             "so_procode": "PROD003",
+  //             "so_running": "SO003"
+  //           }
+  //         ]
+  //       }
+  //     ]
+  //   },
+  //   {
+  //     "all_sh_running": ["SH202505070003"],
+  //     "emp": {
+  //       "emp_nickname": "ธานี"
+  //     },
+  //     "emp_code": "EMP003",
+  //     "emp_code_picking": "EMP003",
+  //     "emp_picking": {
+  //       "emp_nickname": "ธานี"
+  //     },
+  //     "mem_code": "MEM002",
+  //     "mem_id": 67890,
+  //     "mem_name": "อลิษา ใจดี",
+  //     "picking_status": "pending",
+  //     "province": "กรุงเทพฯ",
+  //     "shoppingHeads": [
+  //       {
+  //         "sh_id": 3,
+  //         "sh_running": "SH202505070003",
+  //         "sh_datetime": "2025-05-07T13:45:00Z",
+  //         "shoppingOrders": [
+  //           {
+  //             "picking_status": "pending",
+  //             "product": {
+  //               "product_floor": "5"
+  //             },
+  //             "so_procode": "PROD004",
+  //             "so_running": "SO004"
+  //           },
+  //           {
+  //             "picking_status": "pending",
+  //             "product": {
+  //               "product_floor": "4"
+  //             },
+  //             "so_procode": "PROD005",
+  //             "so_running": "SO005"
+  //           }
+  //         ]
+  //       }
+  //     ]
+  //   }
+  // ]
+
+
+  // useEffect(() => {
+  //   setOrderList(mockData); // ใช้ mockData แทน data ที่มาจาก socket
+  //   setLoading(false);
+  // }, []);
 
   useEffect(() => {
     console.log(
@@ -125,6 +232,7 @@ const OrderList = () => {
       newSocket.disconnect();
     };
   }, []);
+
   useEffect(() => {
     const totalShoppingOrders = orderList.reduce(
       (total, order) =>
@@ -184,6 +292,7 @@ const OrderList = () => {
         });
       });
     });
+
     console.log("newfloorCounts", newFloorCounts);
     setFloorCounts(newFloorCounts);
     console.log("order List " + JSON.stringify(orderList));
@@ -232,10 +341,16 @@ const OrderList = () => {
   };
 
   const filteredData = orderList.filter((order) => {
-    const matchSearch =
+    const matchSearch: boolean =
       !search ||
       order.mem_name.toLowerCase().includes(search.toLowerCase()) ||
       order.mem_code.toLowerCase().includes(search.toLowerCase());
+    console.log("matchSearch " + matchSearch);
+    console.log("!search " + !search);
+    console.log("order.mem_name.toLowerCase().includes(search.toLowerCase()) " + order.mem_name.toLowerCase().includes(search.toLowerCase()));
+    console.log("order.mem_name.toLowerCase() " + order.mem_name.toLowerCase());
+    console.log("search.toLowerCase() " + search.toLowerCase());
+
 
     const matchFloor =
       !selectedFloor ||
@@ -244,12 +359,12 @@ const OrderList = () => {
           (so) => (so.product.product_floor || "1") === selectedFloor
         )
       );
-
+    console.log("matchFloor " + matchFloor);
     const matchRoute =
       selectroute === "all" ||
       selectroute === "เลือกเส้นทางขนส่ง" ||
       order.province === selectroute;
-
+    console.log("matchRoute " + matchRoute);
     return matchSearch && matchFloor && matchRoute;
   });
 
@@ -262,12 +377,14 @@ const OrderList = () => {
   console.log("selectroute " + selectroute);
 
   const floorButtons = [
+
     { label: "1", value: "1", color: "bg-gray-500" },
     { label: "2", value: "2", color: "bg-yellow-500" },
     { label: "3", value: "3", color: "bg-blue-500" },
     { label: "4", value: "4", color: "bg-red-500" },
     { label: "5", value: "5", color: "bg-emerald-500" },
     { label: "ยกลัง", value: "box", color: "bg-purple-500" },
+
   ];
 
   const printSticker = async (mem_code: string) => {
@@ -523,6 +640,25 @@ const OrderList = () => {
                   </p>
                 </div>
                 <div className="flex justify-center px-3 text-white">
+                  <button onClick={() => navigate("/order-list")} className="w-full mx-auto flex py-2 active:bg-red-600 scale-95 transition cursor-pointer text-center items-center font-light rounded-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-9 rounded-full mr-1 ml-1 p-1 text-white">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                    </svg>
+                    รายการคำสั่งซื้อ
+                  </button>
+                </div>
+                <div className="flex justify-center px-3 text-white">
+                  <button onClick={() => navigate("/report")} className="w-full mx-auto flex py-2 active:bg-red-600 scale-95 transition cursor-pointer text-center items-center font-light rounded-sm">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-9 rounded-full mr-1 ml-1 p-1 text-white">
+                      <path strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M3 3v1.5M3 21v-6m0 0 2.77-.693a9 9 0 0 1 6.208.682l.108.054a9 9 0 0 0 6.086.71l3.114-.732a48.524 48.524 0 0 1-.005-10.499l-3.11.732a9 9 0 0 1-6.085-.711l-.108-.054a9 9 0 0 0-6.208-.682L3 4.5M3 15V4.5"
+                      />
+                    </svg>
+                    สถิติพนักงาน
+                  </button>
+                </div>
+                <div className="flex justify-center px-3 text-white">
                   <button
                     onClick={logout}
                     className="w-full mx-auto flex py-2 active:bg-red-600 scale-95 transition cursor-pointer text-center items-center font-light rounded-sm"
@@ -558,6 +694,7 @@ const OrderList = () => {
           </div>
         ) : (
           <div>
+
             {filteredData.length > 0 ? (
               <div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 w-full mb-36 mt-3">
@@ -575,6 +712,7 @@ const OrderList = () => {
                         .flatMap((head) => head.shoppingOrders)
                         .reduce((acc, order) => {
                           const floor = order.product.product_floor || "1";
+
                           if (!acc[floor]) {
                             acc[floor] = { total: 0, remaining: 0 };
                           }
@@ -594,13 +732,16 @@ const OrderList = () => {
                         >
                           <div
                             onClick={() => togglePopup(order.mem_code)}
+
                             className={`w-full p-2 rounded-sm shadow-xl text-[12px] text-[#444444] ${order.picking_status === "picking"
+
                               ? "bg-green-400"
                               : "bg-gray-400"
                               }`}
                           >
                             <div
                               className={`p-1 rounded-sm ${order.picking_status === "picking"
+
                                 ? "bg-green-100"
                                 : "bg-white"
                                 }`}
@@ -713,6 +854,7 @@ const OrderList = () => {
                                           disabled={
                                             !(
                                               order.shoppingHeads
+
                                                 .flatMap(
                                                   (h) => h.shoppingOrders
                                                 )
@@ -720,6 +862,7 @@ const OrderList = () => {
                                                   (so) =>
                                                     so.picking_status !==
                                                     "pending"
+
                                                 ).length -
                                               order.shoppingHeads.flatMap(
                                                 (h) => h.shoppingOrders
@@ -752,6 +895,7 @@ const OrderList = () => {
                                             }
                                             );
                                           }}
+
                                         >
                                           ยืนยัน
                                         </button>
@@ -768,6 +912,7 @@ const OrderList = () => {
                                             handleDoubleClick(() => {
                                               changeToPending(order?.mem_code);
                                             })
+
                                           }}
                                         >
                                           เปลี่ยน
@@ -954,6 +1099,7 @@ const OrderList = () => {
                             : '-'}
                         </p>
                       </div>
+
                     </div>
                   );
                 })}
