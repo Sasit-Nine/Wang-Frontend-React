@@ -68,7 +68,8 @@ const Dashboard: React.FC = () => {
     null
   );
   const [dataOnTop, setDataOnTop] = useState<QCdatum[] | null>(null);
-  const [quartarlyData, setQuartarlyData] = useState<QuartarlyData[]>([])
+  const [quartarlyData, setQuartarlyData] = useState<QuartarlyData[]>([]);
+
 
   useEffect(() => {
     console.log(`${import.meta.env.VITE_API_URL_ORDER}/socket/kpi/dashboard`);
@@ -118,7 +119,7 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     if (qcStationsData) {
       console.log("qcStationsData:", qcStationsData);
-  
+
       const newData: QuartarlyData[] = qcStationsData.map((station) => {
         const workingHours = calculateWorkingHours(
           station.firstQcTime,
@@ -126,17 +127,16 @@ const Dashboard: React.FC = () => {
         );
         const speed = calculateSpeed(station.qc_count, workingHours);
         console.log(`Station ${station.stationId} Speed:`, speed);
-  
+
         return {
           quarter: `Q${station.stationId}`,
           speed: speed,
         };
       });
-  
+
       setQuartarlyData(newData);
     }
   }, [qcStationsData]);
-
 
   // ฟังก์ชันคำนวณเวลาทำงาน (ชั่วโมง)
   const calculateWorkingHours = (
@@ -180,13 +180,13 @@ const Dashboard: React.FC = () => {
 
   // ฟังก์ชันคำนวณความเร็ว (รายการ/ชั่วโมง)
   const calculateSpeed = (qc_count: number, workingHours: number): number => {
-    console.log("=== calculateSpeed ===")
+    console.log("=== calculateSpeed ===");
     console.log("qc_count:", qc_count);
     console.log("workingHours:", workingHours);
     const trimmedHours = Math.floor(workingHours * 100) / 100;
     if (workingHours === 0) return 0;
     const speed = qc_count / trimmedHours;
-    console.log('speed :', speed)
+    console.log("speed :", speed);
     return Math.floor(speed);
   };
 
@@ -204,7 +204,7 @@ const Dashboard: React.FC = () => {
       station.firstQcTime,
       station.lastQcTime
     );
-    console.log('workingHours : ',workingHours);
+    console.log("workingHours : ", workingHours);
     console.log("station.firstQcTime:", station.firstQcTime);
     console.log("station.lastQcTime:", station.lastQcTime);
     return calculateSpeed(station.qc_count, workingHours);
@@ -212,8 +212,8 @@ const Dashboard: React.FC = () => {
 
   // ฟังก์ชันคำนวณความเร็วเฉลี่ย
   const calculateAverageSpeed = (floor: FloorData): number => {
-    console.log('floor data :', floorData)
-    console.log('floor : ', floor)
+    console.log("floor data :", floorData);
+    console.log("floor : ", floor);
     // ถ้ายังไม่เริ่มจัดออเดอร์วันนี้
     if (
       !floor.firstPickingTime ||
@@ -272,16 +272,24 @@ const Dashboard: React.FC = () => {
       : "__:__ น.";
   };
 
+  // ฟังก์ชันคำนวณสีตามความเร็ว
+  const getSpeedColorClass = (speedPerHour: number): string => {
+    if (speedPerHour >= 350) return "bg-blue-500";
+    if (speedPerHour >= 251 && speedPerHour <= 349) return "bg-green-500";
+    if (speedPerHour >= 151 && speedPerHour <= 249) return "bg-yellow-500";
+    return "bg-red-500";
+  };
 
- 
   const calculateActualCompletionTime = () => {
     const speedValues = quartarlyData.map((q) => q.speed);
     const sumSpeed = speedValues.reduce((sum, speed) => sum + speed, 0);
 
     const minutesNeeded = Math.ceil(((totalsOfQc ?? 0) * 60) / sumSpeed);
 
-    const formulasAfterAddQc = ((totalsOfQc ?? 0) * sumSpeed) / ((totalsOfQc ?? 0) + 1);
-    const formulasAfterReduceQc = ((totalsOfQc ?? 0) * sumSpeed) / ((totalsOfQc ?? 0) - 1);
+    const formulasAfterAddQc =
+      ((totalsOfQc ?? 0) * sumSpeed) / ((totalsOfQc ?? 0) + 1);
+    const formulasAfterReduceQc =
+      ((totalsOfQc ?? 0) * sumSpeed) / ((totalsOfQc ?? 0) - 1);
     const timeAdd = minutesNeeded - formulasAfterAddQc;
     const timeReduced = minutesNeeded - formulasAfterReduceQc;
 
@@ -321,40 +329,8 @@ const Dashboard: React.FC = () => {
       timeAdd: Math.ceil(timeAdd),
     };
   };
-  const {
-    thaiDate,
-    thaiTime,
-    timeReduced,
-    timeAdd,
-  } = calculateActualCompletionTime();
-
-  const colorConfig: Record<string, Color> = {
-    "4": {
-      primary: "bg-red-700",
-      secondary: "bg-red-700",
-      border: "border-white",
-    },
-    "3": {
-      primary: "bg-blue-500",
-      secondary: "bg-blue-500",
-      border: "border-white",
-    },
-    "5": {
-      primary: "bg-green-500",
-      secondary: "bg-green-500",
-      border: "border-white",
-    },
-    "1": {
-      primary: "bg-gray-500",
-      secondary: "bg-gray-500",
-      border: "border-white",
-    },
-    "2": {
-      primary: "bg-yellow-500",
-      secondary: "bg-yellow-500",
-      border: "border-white",
-    },
-  };
+  const { thaiDate, thaiTime, timeReduced, timeAdd } =
+    calculateActualCompletionTime();
 
   return (
     <>
@@ -494,7 +470,10 @@ const Dashboard: React.FC = () => {
               <div className="text-2xl text-gray-600 font-bold">
                 เหลือ QC ทั้งหมด
               </div>
-              <div id ='OrderList' className="text-8xl font-bold text-blue-600 mb-2">
+              <div
+                id="OrderList"
+                className="text-8xl font-bold text-blue-600 mb-2"
+              >
                 {data?.AllQC}
               </div>
               <div className="text-2xl text-gray-600 font-bold">รายการ</div>
@@ -508,15 +487,20 @@ const Dashboard: React.FC = () => {
               </p>
               <p className="text-lg">-</p>
               <p className="text-lg text-red-700 font-bold">
-                ทุกการ หายไปของ Qc 1 Stations จะเพิ่มเวลาการทำงาน{" "}
-                {timeReduced} น.
+                ทุกการ หายไปของ Qc 1 Stations จะเพิ่มเวลาการทำงาน {timeReduced}{" "}
+                น.
               </p>
             </div>
             <div className="flex justify-center items-center mt-3">
               <div className="text-2xl font-semibold">
                 เสร็จใน{" "}
-                <span className="text-blue-600 text-5xl font-bold">{thaiDate}</span>{" "}
-                <span className="text-blue-600 text-5xl font-bold">{thaiTime}</span> น.
+                <span className="text-blue-600 text-5xl font-bold">
+                  {thaiDate}
+                </span>{" "}
+                <span className="text-blue-600 text-5xl font-bold">
+                  {thaiTime}
+                </span>{" "}
+                น.
               </div>
             </div>
           </div>
@@ -544,11 +528,10 @@ const Dashboard: React.FC = () => {
               ?.slice()
               .sort((a, b) => a.product_floor.localeCompare(b.product_floor))
               .map((floor) => {
-                const color = colorConfig[floor.product_floor];
                 return (
                   <div key={floor.product_floor} className="text-center">
                     <div
-                      className={`${color.primary} text-white h-16 border-b ${color.border} flex flex-col justify-center`}
+                      className={`${floor.product_floor === '2' ? 'text-yellow-600' : floor.product_floor === '3' ? 'text-blue-600': floor.product_floor === '4' ? 'text-red-700': floor.product_floor === '5' ?'text-green-700' : 'text-gray-600'} h-16 flex flex-col border-gray-300 border-t border-r border-b justify-center`}
                     >
                       <div className="text-lg font-bold">
                         F{floor.product_floor}
@@ -558,33 +541,28 @@ const Dashboard: React.FC = () => {
                       </div>
                     </div>
                     <div
-                      className={`${color.primary} text-white h-20 border-b ${color.border} flex items-center justify-center`}
+                      className={`text-white h-20 border-b flex items-center justify-center border-r border-gray-300`}
                     >
-                      <div className="text-5xl font-bold">
+                      <div className={`${floor.product_floor === '2' ? 'text-yellow-600' : floor.product_floor === '3' ? 'text-blue-600': floor.product_floor === '4' ? 'text-red-700': floor.product_floor === '5' ?'text-green-700' : 'text-gray-600'} text-5xl font-bold`}>
                         {floor.remainingItem}
                       </div>
                     </div>
                     <div
-                      className={`${
-                        color.secondary
-                      } text-white h-12 border-b ${color.border
-                        .replace("border-", "border-")
-                        .replace(
-                          "500",
-                          "400"
-                        )} flex items-center justify-center`}
+                      className={`
+                        ${floor.product_floor === '2' ? 'text-yellow-600' : floor.product_floor === '3' ? 'text-blue-600': floor.product_floor === '4' ? 'text-red-700': floor.product_floor === '5' ?'text-green-700' : 'text-gray-600'}
+                        h-12 border-b flex items-center justify-center border-r border-gray-300`}
                     >
-                      <div className="text-sm font-bold">
+                      <div className={`text-sm font-bold`}>
                         {displayTime(floor.lastPickingTime)}
                       </div>
                     </div>
                     <div
-                      className={`${color.secondary} text-white h-16 flex flex-col justify-center`}
+                      className={`${getSpeedColorClass(calculateAverageSpeed(floor) * 60)} text-white h-16 flex flex-col justify-center border-r border-gray-300`}
                     >
-                      <div className="text-lg font-bold">
-                        {calculateAverageSpeed(floor).toFixed(2)}
-                      </div>
-                      <div className="text-xs">รก./นาที</div>
+                      <p className="text-lg font-bold">
+                        {(calculateAverageSpeed(floor) * 60).toFixed(2)}
+                      </p>
+                      <p className="text-xs">รก./ชม.</p>
                     </div>
                   </div>
                 );
@@ -607,7 +585,7 @@ const Dashboard: React.FC = () => {
 
               return (
                 <div key={station.stationId} className="border border-gray-300">
-                  <div className="bg-orange-600 text-white p-3 text-center font-bold text-lg">
+                  <div className={`${speed >= 300 ? 'bg-blue-500': speed >= 200 ? 'bg-green-600': speed >= 150 ? 'bg-yellow-500': speed >= 0 && 'bg-red-600'} text-white p-3 text-center font-bold text-lg`}>
                     Q{station.stationId}
                   </div>
                   <div className="bg-gray-100 p-2 flex justify-center items-center text-xs">
@@ -643,7 +621,7 @@ const Dashboard: React.FC = () => {
                       ? `${dayjs(station.lastQcTime).format("HH:mm")} น.`
                       : "__:__"}
                   </div>
-                  <div className="bg-orange-600 text-white p-3 text-center font-bold text-xs">
+                  <div className={`${speed >= 300 ? 'bg-blue-500': speed >= 200 ? 'bg-green-600': speed >= 150 ? 'bg-yellow-500': speed >= 0 && 'bg-red-600'} text-white p-3 text-center font-bold text-xs`}>
                     speed <span className="text-xl">{speed}</span> รก./ชม.
                   </div>
                 </div>

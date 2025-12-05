@@ -32,6 +32,9 @@ import Welcome from "./pages/OpenTicket/Welcome";
 import Ticket from "./pages/OpenTicket/Ticket";
 import StatusTicket from "./pages/OpenTicket/StatusTicket";
 import RequestProduct from "./pages/RequestProduct";
+import RouteManage from "./pages/RouteManage";
+import DashboardRoute from "./pages/DashboardRoute";
+import LoopDashBoard from "./pages/LoopDashboard";
 
 function App() {
   return (
@@ -260,6 +263,34 @@ function App() {
             element={
               <div>
                 <StatusTicket />
+              </div>
+            }
+          />
+          <Route
+            path="/route-manage"
+            element={
+              <div>
+                <Navbar />
+                {/* <RequireAuth> */}
+                <RouteManage />
+                {/* </RequireAuth> */}
+              </div>
+            }
+          />
+          <Route
+            path="/loop-dashboard"
+            element={
+              <div>
+                <LoopDashBoard />
+              </div>
+            }
+          />
+
+          <Route
+            path="/dashboard-route"
+            element={
+              <div>
+                <DashboardRoute />
               </div>
             }
           />
