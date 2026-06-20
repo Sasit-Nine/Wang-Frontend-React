@@ -3,19 +3,30 @@ import incorect from "../assets/incorrect.png";
 import warning from "../assets/warning.png";
 import box from "../assets/return-box.png";
 import { useEffect, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { io, Socket } from "socket.io-client";
 import Modal from "../components/ModalQC";
 import Barcode from "react-barcode";
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import prepareIcon from "../assets/received.png";
 import QCIcon from "../assets/quality-control.png";
 import PackingIcon from "../assets/package-delivered.png";
 import { QRCodeSVG } from "qrcode.react";
 import boxnotfound from "../assets/product-17.png";
 import dayjs from "dayjs";
+import utc from 'dayjs/plugin/utc';
+import timezone from 'dayjs/plugin/timezone';
+import 'dayjs/locale/th';
+
+// กำหนด dayjs plugins
+dayjs.extend(utc);
+dayjs.extend(timezone);
+dayjs.locale('th');
 import { SHIPPING_OTHER } from "../const/Constant";
 import { useNavigate } from "react-router";
 import Swal from "sweetalert2";
+import ManualPicture from "../assets/manual_sticker.png";
+import Reportproblem from "../components/Reportproblem";
 
 const TAB_KEY = "qc-dashboard";
 
@@ -25,6 +36,13 @@ export interface Root {
   shoppingOrders: ShoppingOrder[];
   members: Members;
   shipping_id: number | null;
+}
+
+export interface NameChangeRequest {
+  id: number;
+  status: string;
+  old_name: string;
+  new_name: string;
 }
 
 export interface ShoppingOrder {
@@ -39,7 +57,11 @@ export interface ShoppingOrder {
   so_qc_note: string | null;
   so_already_qc: string;
   so_qc_amount: number;
+  is_reward: boolean;
   amount_max: number | null;
+  product_name_at_order: string | null;
+  name_change_request_id: number | null;
+  nameChangeRequest: NameChangeRequest | null;
   product: Product;
 }
 
@@ -59,6 +81,9 @@ export interface Product {
   attribute: ProductAttr[];
   detail: ProductDetail[];
   unit: Unit[];
+  rtRequests: {
+    status: string;
+  }[];
 }
 
 export interface Unit {
@@ -113,16 +138,60 @@ export interface dataForEmp {
 }
 
 export interface urgent {
-  mem_code: string,
-  mem_name: string,
-  amount: string,
+  mem_code: string;
+  mem_name: string;
+  amount: string;
+}
+
+export interface ProductNotFoundBarCode {
+  pro_code: string;
+  pro_name: string;
+}
+
+export interface ShoppingOrderPrint {
+  mem_code: string;
+  mem_name: string;
+  route_name: string;
+  basket_floor_2: number;
+  basket_floor_3: number;
+  basket_floor_4: number;
+  basket_floor_5: number;
+  box_floor_2: number;
+  box_floor_3: number;
+  box_floor_4: number;
+  box_floor_5: number;
+  last_printed: string;
+  basket_count: number;
+  box_count: number;
+  total_items: number;
+}
+
+interface AllStations {
+  updated_at: string,
+  emp_code: string,
+  is_active: false,
+  station: number,
 }
 
 export type ShoppingHead = Root[];
 export type ShoppingHeadOne = Root;
 
+interface SwapProductResult {
+  product_code: string;
+  product_name: string;
+  product_unit: string;
+  product_stock: number;
+}
+
+interface RecycleBox {
+  id: string;
+  name: string;
+  amount: number;
+  created_at: string | null;
+}
+
 const QCDashboard = () => {
-  const [urgent, setUrgent] = useState<urgent[]| null>(null);
+  const [urgent, setUrgent] = useState<urgent[] | null>(null);
   const [dataQC, setDataQC] = useState<ShoppingHead | ShoppingHeadOne | null>(
     null
   );
@@ -133,7 +202,7 @@ const QCDashboard = () => {
   const [sh_running, setSh_running] = useState<string | null>(null);
   const [, setIsInputLocked] = useState(false);
   const [InputValues, setInputValues] = useState<string[]>(Array(10).fill(""));
-  const [countBox, setCountBox] = useState<number>(1);
+  const [countBox, setCountBox] = useState<number>(0);
   const [error, setError] = useState<boolean>(false);
 
   // Modal Open QC
@@ -151,6 +220,50 @@ const QCDashboard = () => {
   // Modal Manage shopping head
   const [modalManageOpen, setModalManageOpen] = useState<boolean>(false);
 
+  // Modal Print Sticker Open
+  const [modalPrintStickerOpen, setModalPrintStickerOpen] = useState<
+    string | null
+  >(null);
+
+  // Modal Product Request Open
+  const [modalProductRequestOpen, setModalProductRequestOpen] = useState<
+    string | null
+  >(null);
+
+  // Modal แจ้งเตือนสินค้าถูก freeze (รอ Admin อนุมัติเปลี่ยนชื่อ)
+  const [frozenModalOrder, setFrozenModalOrder] =
+    useState<ShoppingOrder | null>(null);
+
+  // Modal Alert Barcode Not Found
+  const [modalBarcodeNotFound, setModalBarcodeNotFound] =
+    useState<boolean>(false);
+
+  const [barcodeNotFound, setBarcodeNotFound] = useState<string>("");
+  const [selectedReason, setSelectedReason] = useState<string | null>(null);
+  const [customReason, setCustomReason] = useState("");
+  const REQUEST_REASONS = [
+    "สินค้าเสียหาย",
+    "หาสินค้าไม่เจอ",
+    "พนักงานจัดออเดอร์ไม่จัดลงมา",
+    "อื่น ๆ",
+  ];
+
+  const RT_NOTE = [
+    "สินค้าไม่พร้อมขาย",
+    "สินค้าหมด",
+    "สินค้าหมดอายุ",
+    "สินค้าถูกจำกัดจำนวน",
+    "สินค้าไม่อนุญาตให้ขายในเส้นทางนี้",
+    "อื่น ๆ",
+  ];
+
+  const finalReason =
+    selectedReason === "อื่น ๆ" ? customReason : selectedReason;
+  const [productNotFoundBarCode, setProductNotFoundBarCode] =
+    useState<ProductNotFoundBarCode | null>(null);
+  const [productCodeRequestSticker, setProductCodeRequestSticker] =
+    useState<string>("");
+
   // Data State
   const [orderForQC, setOrderForQC] = useState<ShoppingOrder>();
   const [order, setOrder] = useState<ShoppingOrder[]>([]);
@@ -160,6 +273,25 @@ const QCDashboard = () => {
   const [hasNotPicked, setHasNotPicked] = useState<number>(0);
   const [inComplete, setInComplete] = useState<number>(0);
   const [RT, setRT] = useState<number>(0);
+
+  // RT Request Modal
+  const [rtRequestModalOpen, setRtRequestModalOpen] = useState<boolean>(false);
+  const [rtQcNote, setRtQcNote] = useState<string>("");
+  const [selectedRTReason, setSelectedRTReason] = useState<string | null>(null);
+  const [customRTReason, setCustomRTReason] = useState<string>("");
+  // const [rtQcNoteSaved, setRtQcNoteSaved] = useState<boolean>(false);
+  const [rtPendingData, setRtPendingData] = useState<{
+    ref: string;
+    so_running: string;
+    sh_running: string;
+    pro_code: string;
+    employees?: { code: string; name: string }[];
+  } | null>(null);
+
+  // เก็บข้อมูลสินค้าที่จะ RT
+  const [rtSelectedProduct, setRtSelectedProduct] = useState<ShoppingOrder | null>(null);
+
+  // State สำหรับเก็บ employee array ที่ได้จาก RT API
   const [shRunningArray, setSHRunningArray] = useState<string[] | null>(null);
   const [memRoute, setMemRoute] = useState<string | null>(null);
 
@@ -228,12 +360,107 @@ const QCDashboard = () => {
   const [loadingSubmit, setLoadingSubmit] = useState<boolean>(false);
 
   const [hasPrintSticker, setHasPrintSticker] = useState<boolean>(false);
+  const [hasFrozenNameChange, setHasFrozenNameChange] = useState<boolean>(false);
 
   const [cannotSubmit, setCannotSubmit] = useState<string | null>(null);
 
   const [requestProductFlag, setRequestProductFlag] = useState<boolean>(false);
 
   const navigate = useNavigate();
+
+  const [basketDataForPrint, setBasketDataForPrint] = useState<
+    ShoppingOrderPrint[] | null
+  >(null);
+
+  const [UUIDStationQC, setuuidStationQC] = useState<string | null>(localStorage.getItem("UUIDStationQC"));
+
+  // Modal Station Info
+  const [modalStationInfo, setModalStationInfo] = useState<boolean>(false);
+  const [stationData, setStationData] = useState<AllStations[]>([]);
+  const [loadingStationData, setLoadingStationData] = useState<boolean>(false);
+
+  // Modal Delete Station Confirmation
+  const [modalDeleteStation, setModalDeleteStation] = useState<boolean>(false);
+  const [stationToDelete, setStationToDelete] = useState<number | null>(null);
+
+  const [isSavingRT, setIsSavingRT] = useState<boolean>(false);
+  const [featureFlagRTRequest, setFeatureFlagRTRequest] = useState<boolean>(false);
+
+  // Promotion check modal (tier price)
+  const [promotionCheckModalOpen, setPromotionCheckModalOpen] = useState<boolean>(false);
+  const [promotionProCodes, setPromotionProCodes] = useState<string[]>([]);
+  const [pendingRTSoRunning, setPendingRTSoRunning] = useState<string | null>(null);
+  const [promotionSharedBarcode, setPromotionSharedBarcode] = useState<string>("");
+  const [promotionBarcodeConfirmed, setPromotionBarcodeConfirmed] = useState<Record<string, boolean>>({});
+  const [promotionRTDone, setPromotionRTDone] = useState<Record<string, boolean>>({});
+  const promotionBarcodeRef = useRef<HTMLInputElement>(null);
+
+  // Swap reward item modal
+  const [modalSwapRewardOpen, setModalSwapRewardOpen] = useState<boolean>(false);
+  const [swapTargetSO, setSwapTargetSO] = useState<ShoppingOrder | null>(null);
+  const [swapSearchQuery, setSwapSearchQuery] = useState<string>("");
+  const [swapSearchResults, setSwapSearchResults] = useState<SwapProductResult[]>([]);
+  const [swapSelectedProduct, setSwapSelectedProduct] = useState<SwapProductResult | null>(null);
+  const [swapNewAmount, setSwapNewAmount] = useState<string>("");
+  const [swapLoading, setSwapLoading] = useState<boolean>(false);
+  const [swapSearchLoading, setSwapSearchLoading] = useState<boolean>(false);
+
+  // Recycle Box
+  const [recycleBoxes, setRecycleBoxes] = useState<RecycleBox[]>([]);
+  const [scannedBoxes, setScannedBoxes] = useState<{ id: string; name: string }[]>([]);
+
+  const fetchRecycleBoxes = async () => {
+    try {
+      const res = await axios.get(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/recycle-box/all`,
+        {
+          headers: {
+            Authorization: `Bearer ${sessionStorage.getItem("access_token")}`,
+          },
+        }
+      );
+      setRecycleBoxes(res.data);
+    } catch (e) {
+      console.error("fetchRecycleBoxes error:", e);
+    }
+  };
+
+  const handleScanRecycleBox = async (id: string) => {
+    const box = recycleBoxes.find((b) => b.id === id);
+    if (!box) return;
+    const shArr = Array.isArray(dataQC)
+      ? dataQC.map((d) => d.sh_running)
+      : dataQC
+        ? [(dataQC as { sh_running: string }).sh_running]
+        : [];
+    try {
+      await axios.post(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/recycle-box/decrement`,
+        { uuid: id, sh_running: shArr, name: box.name }
+      );
+      setScannedBoxes((prev) => [...prev, { id, name: box.name }]);
+      setCountBox((prev) => prev + 1);
+      await fetchRecycleBoxes();
+    } catch (e) {
+      console.error("handleScanRecycleBox error:", e);
+    }
+    if (inputBarcode.current) inputBarcode.current.value = "";
+  };
+
+  const handleRemoveBox = async (index: number) => {
+    const box = scannedBoxes[index];
+    try {
+      await axios.post(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/recycle-box/increment`,
+        { uuid: box.id, emp_code: QCEmp?.dataEmp?.emp_code }
+      );
+      setScannedBoxes((prev) => prev.filter((_, i) => i !== index));
+      setCountBox((prev) => Math.max(0, prev - 1));
+      await fetchRecycleBoxes();
+    } catch (e) {
+      console.error("handleRemoveBox error:", e);
+    }
+  };
 
   const handleCheckFlagRequest = async () => {
     const flag = await axios.get(
@@ -244,6 +471,103 @@ const QCDashboard = () => {
       setRequestProductFlag(true);
     }
   };
+
+  const handleSwapSearch = async (query: string) => {
+    setSwapSearchQuery(query);
+    if (!query.trim()) {
+      setSwapSearchResults([]);
+      return;
+    }
+    try {
+      setSwapSearchLoading(true);
+      const res = await axios.post(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/manage/search-product`,
+        { query },
+        { headers: { Authorization: `Bearer ${sessionStorage.getItem("access_token")}` } }
+      );
+      setSwapSearchResults(res.data as SwapProductResult[]);
+    } catch (error) {
+      console.error("Search product error:", error);
+    } finally {
+      setSwapSearchLoading(false);
+    }
+  };
+
+  const handleSwapRewardConfirm = async () => {
+    if (!swapTargetSO || !swapSelectedProduct || !swapNewAmount) return;
+    const amount = Number(swapNewAmount);
+    if (isNaN(amount) || amount <= 0) return;
+    try {
+      setSwapLoading(true);
+      await axios.patch(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/qc/reward-swap`,
+        {
+          so_running: swapTargetSO.so_running,
+          new_product_code: swapSelectedProduct.product_code,
+          new_amount: amount,
+          new_unit: swapSelectedProduct.product_unit,
+        },
+        { headers: { Authorization: `Bearer ${sessionStorage.getItem("access_token")}` } }
+      );
+      // อัปเดต local state
+      setDataQC((prev) => {
+        if (!prev) return null;
+        const updateOrder = (so: ShoppingOrder): ShoppingOrder => {
+          if (so.so_running !== swapTargetSO.so_running) return so;
+          return {
+            ...so,
+            so_amount: amount,
+            so_unit: swapSelectedProduct.product_unit,
+            so_qc_amount: 0,
+            so_already_qc: "No",
+            product: {
+              ...so.product,
+              product_code: swapSelectedProduct.product_code,
+              product_name: swapSelectedProduct.product_name,
+            },
+          };
+        };
+        if (Array.isArray(prev)) {
+          return prev.map((root) => ({
+            ...root,
+            shoppingOrders: root.shoppingOrders.map(updateOrder),
+          }));
+        }
+        return { ...prev, shoppingOrders: prev.shoppingOrders.map(updateOrder) };
+      });
+      setModalSwapRewardOpen(false);
+      setSwapTargetSO(null);
+      setSwapSelectedProduct(null);
+      setSwapNewAmount("");
+      setSwapSearchQuery("");
+      setSwapSearchResults([]);
+      await Swal.fire({
+        icon: "success",
+        title: "เปลี่ยนของแถมสำเร็จ",
+        text: `เปลี่ยนเป็น ${swapSelectedProduct.product_name} จำนวน ${amount} ${swapSelectedProduct.product_unit ?? ""}`,
+        timer: 2000,
+        showConfirmButton: false,
+      });
+    } catch (error) {
+      console.error("Swap reward error:", error);
+      const errMsg =
+        error instanceof Error
+          ? error.message
+          : (error as { response?: { data?: { message?: string } } })
+              ?.response?.data?.message ?? "กรุณาลองใหม่อีกครั้ง";
+      await Swal.fire({
+        icon: "error",
+        title: "เปลี่ยนของแถมไม่สำเร็จ",
+        text: errMsg,
+      });
+    } finally {
+      setSwapLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchRecycleBoxes();
+  }, []);
 
   useEffect(() => {
     if (import.meta.env.VITE_API_URL_ONOFF_ONE_TAB === "false") {
@@ -263,6 +587,8 @@ const QCDashboard = () => {
     };
     window.addEventListener("storage", handleStorage);
 
+    checkFlagRTRequest();
+
     const cleanup = () => {
       localStorage.removeItem(TAB_KEY);
     };
@@ -278,8 +604,7 @@ const QCDashboard = () => {
   useEffect(() => {
     if (prepareEmp?.dataEmp?.emp_code) {
       setInputPrepare(
-        `${prepareEmp.dataEmp.emp_code} ${
-          prepareEmp.dataEmp.emp_nickname || ""
+        `${prepareEmp.dataEmp.emp_code} ${prepareEmp.dataEmp.emp_nickname || ""
         }`
       );
     }
@@ -310,7 +635,8 @@ const QCDashboard = () => {
   useEffect(() => {
     if (strappingEMP?.dataEmp?.emp_code) {
       setInputStrapping(
-        `${strappingEMP.dataEmp.emp_code} ${strappingEMP.dataEmp.emp_nickname || ""}`
+        `${strappingEMP.dataEmp.emp_code} ${strappingEMP.dataEmp.emp_nickname || ""
+        }`
       );
     }
   }, [strappingEMP]);
@@ -329,7 +655,6 @@ const QCDashboard = () => {
     }
   };
 
-  // เริ่มต้นโปรแกรม
   useEffect(() => {
     checkFlagDeleteBill();
     handleCheckFlagRequest();
@@ -349,10 +674,21 @@ const QCDashboard = () => {
       console.log("✅ Connected to WebSocket");
     });
 
+    newSocket.on(`box_count:${mem_code}`, (data) => {
+      console.log("box_count_from init useEffect", data);
+      setBasketDataForPrint(data);
+    });
+
     newSocket.on("urgent", (data) => {
-      console.log('urgent', data);
+      console.log("urgent", data);
       setUrgent(data);
-    })
+    });
+
+    // newSocket.on("data_updated", (data) => {
+    //   console.log("Data updated from server:", data);
+    //   // Force refresh when external changes detected
+    //   handleManualRefresh();
+    // });
 
     newSocket.on("qcdata", (data) => {
       console.log("Received data:", data);
@@ -390,6 +726,31 @@ const QCDashboard = () => {
       setFeatureFlag(false);
     });
 
+    newSocket.on(
+      "name_change:resolved",
+      (data: { requestId: number; status: string; productCode: string }) => {
+        setDataQC((prev) => {
+          if (!prev) return prev;
+          const updateOrders = (orders: ShoppingOrder[]): ShoppingOrder[] =>
+            orders.map((o) =>
+              o.name_change_request_id === data.requestId && o.nameChangeRequest
+                ? { ...o, nameChangeRequest: { ...o.nameChangeRequest, status: data.status } }
+                : o
+            );
+          if (Array.isArray(prev)) {
+            return prev.map((head) => ({
+              ...head,
+              shoppingOrders: updateOrders(head.shoppingOrders),
+            }));
+          }
+          return {
+            ...(prev as Root),
+            shoppingOrders: updateOrders((prev as Root).shoppingOrders),
+          };
+        });
+      }
+    );
+
     const prepareEmpData = sessionStorage.getItem("prepare-emp");
     const QCEmpData = sessionStorage.getItem("qc-emp");
     const packedEmpData = sessionStorage.getItem("packed-emp");
@@ -416,6 +777,26 @@ const QCDashboard = () => {
       newSocket.disconnect();
     };
   }, []);
+
+  useEffect(() => {
+    if (mem_code && socket) {
+      socket.emit("box_count", { mem_code });
+      console.log("socket box_count listener setup", mem_code);
+
+      const handleBoxCount = (data: ShoppingOrderPrint[] | null) => {
+        console.log("handleBoxCount", data);
+        setBasketDataForPrint(data);
+      };
+
+      socket.on(`box_count:${mem_code}`, handleBoxCount);
+
+      // Cleanup function
+      return () => {
+        socket.off(`box_count:${mem_code}`, handleBoxCount);
+        console.log("socket box_count listener removed", mem_code);
+      };
+    }
+  }, [mem_code, socket]);
 
   // auto focus
 
@@ -501,7 +882,6 @@ const QCDashboard = () => {
       let sortedData = [];
 
       if (Array.isArray(dataQC)) {
-        // 🔥 เรียงตาม sh_datetime
         sortedData = [...dataQC].sort((a, b) => {
           return (
             new Date(a.sh_datetime).getTime() -
@@ -563,7 +943,12 @@ const QCDashboard = () => {
         ? dataQC.every((item) => item.shipping_id != null)
         : dataQC.shipping_id != null;
 
+      const frozenByNameChange = shoppingOrder?.some(
+        (so) => so.nameChangeRequest?.status === "pending"
+      ) ?? false;
+
       setHasPrintSticker(hasPrintSticker);
+      setHasFrozenNameChange(frozenByNameChange);
       setOrder(shoppingOrder);
       console.log(shoppingOrder);
       setHasnotQC(notQC);
@@ -663,6 +1048,7 @@ const QCDashboard = () => {
 
   const handleClear = () => {
     setCannotSubmit(null);
+    setHasFrozenNameChange(false);
     setSubmitFailed(false);
     setSubmitSucess(false);
     setHasQC(0);
@@ -682,14 +1068,69 @@ const QCDashboard = () => {
     setSh_running(null);
     setIsInputLocked(false);
     setHasnotQC(0);
-    setCountBox(1);
+    setCountBox(0);
     setInputValues(Array(10).fill(""));
     setProductNotHaveBarcode(null);
     setSHRunningArray(null);
     setAddShRunningArray(null);
     setErrMsgSubmit(null);
     setErrMsgPrintBox(null);
+    setBasketDataForPrint(null);
     inputBill.current?.focus();
+  };
+
+  // Manual refresh function
+  const handleManualRefresh = async () => {
+    const checkFlagRT = await checkFlagRTRequest();
+    console.log("checkFlagRT in handleManualRefresh:", checkFlagRT);
+    if (checkFlagRT === false) {
+      return ;
+    }
+    try {
+      if (socket && wantConnect) {
+        if (inputMemCode) {
+          console.log("เข้าเงื่อนไขใน use Effect");
+          console.log("1");
+          socket.emit("join_room", {
+            mem_code: inputMemCode,
+            sh_running: null,
+            sh_running_array: null,
+            addShRunningArray: null,
+          });
+          setLoading(true);
+        } else if (sh_running) {
+          console.log("else if");
+          socket.emit("join_room", {
+            mem_code: null,
+            sh_running,
+            sh_running_array: null,
+            addShRunningArray: null,
+          });
+          setLoading(true);
+        } else if (sh_running_array) {
+          console.log("2");
+          socket.emit("join_room", {
+            mem_code: null,
+            sh_running: null,
+            addShRunningArray: null,
+            sh_running_array,
+          });
+          setLoading(true);
+        } else if (addShRunningArray) {
+          console.log("ได้แล้วโว้ยยยย");
+          socket.emit("join_room", {
+            mem_code: null,
+            sh_running: null,
+            sh_running_array: null,
+            addShRunningArray,
+          });
+        }
+        // Also refresh urgent data
+        socket.emit("get_urgent");
+      }
+    } catch (error) {
+      console.error("Manual refresh failed:", error);
+    }
   };
 
   // ดึงข้อมูลสำหรับแสดงในหน้าขอสินค้าเพิ่ม
@@ -759,20 +1200,43 @@ const QCDashboard = () => {
   const handleScan = async (barcode: string) => {
     console.log(barcode);
     console.log("order", order);
+
+    const matchBarcode = (o: ShoppingOrder) =>
+      o.product.product_barcode === barcode ||
+      o.product.product_code === barcode ||
+      o.product.product_barcode2 === barcode ||
+      o.product.product_barcode3 === barcode;
+
+    const frozenOrder = order.find(
+      (o) => matchBarcode(o) && o.nameChangeRequest?.status === "pending"
+    );
+    if (frozenOrder) {
+      setFrozenModalOrder(frozenOrder);
+      if (inputBarcode.current) inputBarcode.current.value = "";
+      return;
+    }
+
+    const forceRtOrder = order.find(
+      (o) => matchBarcode(o) && o.nameChangeRequest?.status === "force_rt" && o.so_already_qc !== "RT"
+    );
+    if (forceRtOrder) {
+      if (inputBarcode.current) inputBarcode.current.value = "";
+      return;
+    }
+
+    // const rtOrder = order.find(
+    //   (o) => matchBarcode(o) && o.so_already_qc === "RT"
+    // );
+    // if (rtOrder) {
+    //   if (inputBarcode.current) inputBarcode.current.value = "";
+    //   return;
+    // }
+
     const foundOrder = order.find(
       (o) =>
-        (o.product.product_barcode === barcode &&
-          o.so_already_qc !== "Yes" &&
-          o.so_already_qc !== "RT") ||
-        (o.product.product_code === barcode &&
-          o.so_already_qc !== "Yes" &&
-          o.so_already_qc !== "RT") ||
-        (o.product.product_barcode2 === barcode &&
-          o.so_already_qc !== "Yes" &&
-          o.so_already_qc !== "RT") ||
-        (o.product.product_barcode3 === barcode &&
-          o.so_already_qc !== "Yes" &&
-          o.so_already_qc !== "RT")
+        matchBarcode(o) &&
+        o.so_already_qc !== "Yes" &&
+        o.so_already_qc !== "RT"
     );
     if (foundOrder) {
       const so_running = foundOrder.so_running;
@@ -783,13 +1247,12 @@ const QCDashboard = () => {
 
       setOrderForQC(data.data);
     } else {
+      setModalBarcodeNotFound(true);
       console.log("ไม่พบ barcode นี้ใน order");
     }
     if (inputBarcode.current) {
       inputBarcode.current.value = "";
     }
-    // const so_running = order.find()
-    // const data = await axios.get(`${import.meta.env.VITE_API_URL_ORDER}/api/qc/${}`)
   };
 
   const handleModalClose = () => {
@@ -800,31 +1263,110 @@ const QCDashboard = () => {
   // ดึง API ข้อมูลพนักงาน
 
   const handleGetDataEmp = async (emp_code: string, type_emp: string) => {
-    const data = await axios.get(
-      `${import.meta.env.VITE_API_URL_ORDER}/api/qc/get-emp/${emp_code}`
-    );
-    if (type_emp === "prepare-emp" && data) {
-      sessionStorage.setItem("prepare-emp", JSON.stringify(data.data));
-      setPrepareEmp(data.data);
-      if (!QCEmp) {
-        inputRefEmpQC.current?.focus();
+    try {
+      console.log("UUIDStationQC33:", UUIDStationQC);
+      if (type_emp === "qc-emp" && !UUIDStationQC) {
+        Swal.fire({
+          title: "กรุณาป้อนรหัสสถานี QC",
+          input: "number",
+          inputAttributes: {
+            autocapitalize: "off",
+            min: "1",
+            step: "1"
+          },
+          inputLabel: "Station QC",
+          inputPlaceholder: "กรุณาป้อนรหัสสถานี QC...",
+          confirmButtonText: "ยืนยัน",
+          inputValidator: (value) => {
+            if (!value) {
+              return "กรุณาป้อนรหัสสถานี QC";
+            }
+            const numValue = Number(value);
+            if (isNaN(numValue)) {
+              return "กรุณาป้อนรหัสสถานี QC เป็นตัวเลขเท่านั้น";
+            }
+            if (numValue < 1) {
+              return "รหัสสถานี QC ต้องเป็นค่าบวกและไม่ต่ำกว่า 1";
+            }
+            console.log("Station QC Input:", value);
+          }
+        }).then((result) => {
+          if (result.isConfirmed) {
+            console.log("Station QC:", result.value);
+            sendStationQC(result.value.trim());
+          }
+        });
+        return;
       }
-    } else if (type_emp === "qc-emp" && data) {
-      sessionStorage.setItem("qc-emp", JSON.stringify(data.data));
-      setQCEmp(data.data);
-      if (!packedEMP) {
-        inputRefEmpPacked.current?.focus();
+      console.log("UUIDStationQC44:", UUIDStationQC);
+      const data = await axios.get(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/qc/get-emp/${emp_code}`,
+        {
+          params: {
+            uuidStationChecked: type_emp === "qc-emp" ? UUIDStationQC : null
+          }
+        }
+      );
+
+      if (data.data.dataEmp.allowUsed === true) {
+        if (type_emp === "prepare-emp" && data) {
+          sessionStorage.setItem("prepare-emp", JSON.stringify(data.data));
+          setPrepareEmp(data.data);
+          if (!QCEmp) {
+            inputRefEmpQC.current?.focus();
+          }
+        } else if (type_emp === "qc-emp" && data) {
+          sessionStorage.setItem("qc-emp", JSON.stringify(data.data));
+          setQCEmp(data.data);
+          if (!packedEMP) {
+            inputRefEmpPacked.current?.focus();
+          }
+        } else if (type_emp === "packed-emp" && data) {
+          sessionStorage.setItem("packed-emp", JSON.stringify(data.data));
+          setPackedEmp(data.data);
+        } else if (type_emp === "strapping-emp" && data) {
+          console.log("Strapping EMP", data.data);
+          sessionStorage.setItem("strapping-emp", JSON.stringify(data.data));
+          setStrappingEMP(data.data);
+        } else {
+          return;
+        }
+      } else {
+        Swal.fire({
+          icon: "error",
+          title: "เกิดข้อผิดพลาด",
+          text: `รหัสนี้ ${emp_code} ไม่ได้รับอนุญาตให้เข้าใช้งานระบบ กรุณาติดต่อฝ่าย HR`,
+        });
       }
-    } else if (type_emp === "packed-emp" && data) {
-      sessionStorage.setItem("packed-emp", JSON.stringify(data.data));
-      setPackedEmp(data.data);
-    } else if (type_emp === "strapping-emp" && data) {
-      console.log("Strapping EMP", data.data)
-      sessionStorage.setItem("strapping-emp", JSON.stringify(data.data));
-      setStrappingEMP(data.data);
-    }
-      else {
-      return;
+
+      // ตรวจสอบผลลัพธ์การตรวจสอบรหัสสถานี QC
+      if (type_emp === "qc-emp" && data.data.resultStationQc.message) {
+        const message = data.data.resultStationQc.message;
+        if (message === "UUID not found" || message === "UUID is required") {
+          localStorage.removeItem("UUIDStationQC");
+          handleClearEmpData("qc-emp");
+          setuuidStationQC(null);
+          Swal.fire({
+            icon: "error",
+            title: "รหัสสถานี QC ไม่ถูกต้อง",
+            text: `กรุณาป้อนรหัสสถานี QC ใหม่อีกครั้ง`,
+          });
+        } else if (message === "Error updating station QC") {
+          handleClearEmpData("qc-emp");
+          Swal.fire({
+            icon: "error",
+            title: "เกิดข้อผิดพลาดในการอัปเดตสถานี QC",
+            text: `ไม่สามารถใส่ข้อมูลของพนักงานที่ทำงานอยู่แล้วได้ กรุณารอสักครู่หรือลบข้อมูลพนักงานที่ทำงานอยู่ก่อน`,
+          });
+        }
+      }
+
+    } catch (error) {
+      console.log("Error fetching employee data:", error);
+      Swal.fire({
+        icon: "error",
+        title: `ไม่พบรหัสพนักงาน ${emp_code} ในระบบ`,
+      });
     }
   };
 
@@ -836,6 +1378,13 @@ const QCDashboard = () => {
       inputRefEmpPrepare.current?.focus();
       // setDataQC(null);
     } else if (type_emp === "qc-emp") {
+      const emp_qc = sessionStorage.getItem("qc-emp");
+      if (emp_qc) {
+        const emp_qc_obj = JSON.parse(emp_qc);
+        const emp_code = emp_qc_obj.dataEmp.emp_code;
+        console.log("emp_code", emp_code);
+        cleanEmployeeFromStation(emp_code);
+      }
       sessionStorage.removeItem("qc-emp");
       setQCEmp(undefined);
       setInputQC("");
@@ -853,8 +1402,7 @@ const QCDashboard = () => {
       setStrappingEMP(undefined);
       setInputStrapping("");
       inputRefEmpStrapping.current?.focus();
-    }
-      else {
+    } else {
       return;
     }
   };
@@ -869,13 +1417,6 @@ const QCDashboard = () => {
     }
   ) => {
     try {
-      console.log(data);
-      console.log("QC Old Amount", oldQCAmount);
-      console.log("QC Old Amount", data.so_qc_amount);
-      console.log(
-        "so_qc_amount + QC Old Amount",
-        Number(data.so_qc_amount) + Number(oldQCAmount)
-      );
       const response = await axios.post(
         `${import.meta.env.VITE_API_URL_ORDER}/api/qc/update-qc`,
         {
@@ -937,9 +1478,8 @@ const QCDashboard = () => {
       } else if (response.status !== 200) {
         throw new Error(response.data.msg);
       }
-    } catch (error: any) {
-      console.log("1", error);
-      if (error.response && error.response.data) {
+    } catch (error: unknown) {
+      if (error instanceof AxiosError && error.response && error.response.data) {
         console.error("Error Response Data:", error.response.data);
         if (error.response.data.message === "DataErrorMemCode") {
           Swal.fire({
@@ -962,7 +1502,7 @@ const QCDashboard = () => {
           "มีบางอย่างผิดพลาด กรุณาสแกน QC Code ลูกค้าเจ้าเดิมอีกครั้งเพื่อทำงานต่อ"
         );
       }
-      
+
       setModalOpen(false);
       handleClear();
       inputBill.current?.focus();
@@ -1098,10 +1638,127 @@ const QCDashboard = () => {
         "มีบางอย่างผิดพลาด กรุณาสแกน QC Code ลูกค้าเจ้าเดิมอีกครั้งเพื่อทำงานต่อ"
       );
       handleClear();
+    } finally {
+      setLoadingSubmit(false);
     }
   };
 
-  const handleRT = async (so_running: string) => {
+  const checkFlagRTRequest = async (): Promise<boolean> => {
+    const res = await axios.get(
+      `${import.meta.env.VITE_API_URL_ORDER}/api/feature-flag/check/rt-request`
+    );
+    setFeatureFlagRTRequest(res.data.status);
+
+    return res.data.status;
+  };
+
+  const handleRTClick = async (so: ShoppingOrder) => {
+    try {
+      console.log("Checking RT request feature flag...");
+      console.log("so", so);
+      const checkfeatureFlagRTRequest = await checkFlagRTRequest();
+
+      if (checkfeatureFlagRTRequest !== true) {
+        setRtSelectedProduct(so);
+        setRtRequestModalOpen(true)
+        if (rtQcNote.trim()) {
+          sendRTRequest(so, rtQcNote, false);
+        }
+      } else {
+        setRtSelectedProduct(so);
+        if (!so.so_running || !so.sh_running) {
+          console.error("Missing so_running or sh_running for RT request");
+          setIsSavingRT(false);
+        }
+        setRtRequestModalOpen(true);
+        if (rtQcNote.trim()) {
+          sendRTRequest(so, rtQcNote, true);
+        }
+
+      }
+    } catch (error) {
+      console.error("Failed to create RT request", error);
+      setIsSavingRT(false);
+    }
+  };
+
+  const sendRTRequest = async (so: ShoppingOrder, rtQcNote: string, active: boolean) => {
+    try {
+      const res = await axios.post(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/rt-request`,
+        {
+          mem_code: mem_code,
+          emp_code: QCEmp?.dataEmp.emp_code,
+          pro_code: so.product.product_code,
+          unit_item: so.so_unit,
+          amount_item: so.so_amount,
+          so_running: so.so_running,
+          sh_running: so.sh_running,
+          empQC_note: rtQcNote.trim(),
+          active: active,
+        },
+        {
+          headers: { Authorization: `Bearer ${sessionStorage.getItem("access_token")}` },
+        }
+      );
+      if (res.data.status === "NotActive" || featureFlagRTRequest === false) {
+        setRtRequestModalOpen(false);
+        setRtQcNote("");
+        setSelectedRTReason("");
+        executeRT(so.so_running);
+      } else if (res.data.status === "Pending" && featureFlagRTRequest === true) {
+        setRtPendingData({
+          ref: res.data.refID,
+          so_running: so.so_running,
+          sh_running: so.sh_running,
+          pro_code: so.product.product_code,
+          employees: res.data.employee || [],
+        });
+
+        setDataQC((prev) => {
+          if (!prev) return null;
+
+          const updateOrder = (order: ShoppingOrder): ShoppingOrder => {
+            if (order.so_running === so.so_running) {
+              return { ...order, product: { ...order.product, rtRequests: [{ status: "Pending" }] } };
+            }
+            return order;
+          };
+
+          if (Array.isArray(prev)) {
+            return prev.map((root) => ({
+              ...root,
+              shoppingOrders: root.shoppingOrders.map(updateOrder),
+            }));
+          } else {
+            return {
+              ...prev,
+              shoppingOrders: prev.shoppingOrders.map(updateOrder),
+            };
+          }
+        });
+
+        setRtRequestModalOpen(false);
+        setRtQcNote("");
+        setSelectedRTReason("");
+      }
+      else {
+        setRtRequestModalOpen(false);
+        setRtQcNote("");
+        setSelectedRTReason("");
+      }
+
+      setIsSavingRT(false);
+    } catch {
+      Swal.fire({
+        icon: "error",
+        title: "เกิดข้อผิดพลาด",
+        text: "ไม่สามารถสร้างคำร้องได้"
+      });
+    }
+  };
+
+  const executeRT = async (so_running: string) => {
     const data = await axios.post(
       `${import.meta.env.VITE_API_URL_ORDER}/api/qc/update-rt`,
       {
@@ -1139,8 +1796,67 @@ const QCDashboard = () => {
     }
   };
 
-  const handleRequestProduct = async (so_running: string) => {
-    window.open(`/print-request?so_running=${so_running}`);
+  const handleRT = async (so: ShoppingOrder) => {
+    try {
+      const res = await axios.post(
+        `${import.meta.env.VITE_API_URL_ECOMMERCE}/api/ecom/get-tier-price`,
+        { sh_running: so.sh_running, pro_code: so.product.product_code },
+        { headers: { Authorization: `Bearer ${sessionStorage.getItem("access_token")}` } }
+      );
+      if (res.data.status === true) {
+        await executeRT(so.so_running);
+      } else {
+        const proCodes: string[] = res.data.pro_code_in_promotion ?? [];
+        setPromotionProCodes(proCodes);
+        setPendingRTSoRunning(so.so_running);
+        setPromotionSharedBarcode("");
+        setPromotionBarcodeConfirmed({});
+        setPromotionRTDone({});
+        setPromotionCheckModalOpen(true);
+      }
+    } catch {
+      await executeRT(so.so_running);
+    }
+  };
+
+  const handleRequestProduct = async (
+    so_running: string,
+    pro_code: string,
+    pro_name: string,
+    barcode: string
+  ) => {
+    await axios.post(
+      `${import.meta.env.VITE_API_URL_ORDER
+      }/api/line-notify/print-sticker-issue`,
+      {
+        pro_code: pro_code,
+        pro_name: pro_name,
+        barcode: barcode,
+      }
+    );
+    window.open(
+      `/print-request?so_running=${so_running}&emp_code=${QCEmp?.dataEmp.emp_code}&barcode=${barcodeNotFound}`
+    );
+  };
+
+  const handleRequestProductFloorOne = async (
+    product_code: string,
+    note: string,
+    so_running: string
+  ) => {
+    await axios.post(
+      `${import.meta.env.VITE_API_URL_ORDER}/api/product-request/create`,
+      {
+        product_code: product_code,
+        emp_code: QCEmp?.dataEmp.emp_code,
+        emp_name: QCEmp?.dataEmp.emp_name,
+        note: note,
+      }
+    );
+    window.open(`/print-request?so_running=${so_running}&note=${note}`);
+    setProductCodeRequestSticker("");
+    setSelectedReason("");
+    setCustomReason("");
   };
 
   const handlePrintStickerBox = async () => {
@@ -1176,7 +1892,7 @@ const QCDashboard = () => {
         if (response.status === 201) {
           console.log("Update Success");
           window.open(
-            `/box-sticker-block?print=${countBox}&mem_code=${mem_code}&sh_running=${shRunningArray}`
+            `/box-sticker-block?print=${countBox}&mem_code=${mem_code}&sh_running=${shRunningArray}&emp_qc=${QCEmp?.dataEmp.emp_code}`
           );
         }
       } else if (
@@ -1428,6 +2144,166 @@ const QCDashboard = () => {
     if (modalOpen) setModalOpen(false);
   };
 
+  const fetchStationData = async () => {
+    try {
+      setLoadingStationData(true);
+      // เรียก API เพื่อดึงข้อมูล station ทั้งหมด
+      const response = await axios.get(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/fix-station-qc/all-stations`
+      );
+
+      if (response.data && Array.isArray(response.data)) {
+        setStationData(response.data);
+      } else {
+        setStationData([]); // กรณีไม่มีข้อมูล
+      }
+    } finally {
+      setLoadingStationData(false);
+    }
+  };
+
+  const sendStationQC = async (stationQc: number) => {
+    try {
+      console.log("Checking employee station with UUIDStationQC:", stationQc);
+      const response = await axios.post(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/fix-station-qc/employee-data`,
+        {
+          stationQc: stationQc,
+        }
+      );
+      if (response.data.message && response.data.message === 'Station QC already exists') {
+        Swal.fire({
+          icon: "error",
+          title: "ในระบบมีข้อมูลนี้แล้ว",
+          text: `กรุณากรอกกรุณาตรวจสอบข้อมูลอีกครั้ง`,
+          showCancelButton: true,
+          confirmButtonText: "ตกลง",
+          cancelButtonText: "ดูข้อมูลเพิ่มเติม",
+          confirmButtonColor: "#3085d6",
+          cancelButtonColor: "#17a2b8"
+        }).then((result) => {
+          if (result.isDismissed && result.dismiss === Swal.DismissReason.cancel) {
+            // เปิด modal station โดยตรง
+            setModalStationInfo(true);
+            fetchStationData();
+          }
+        });
+      } else if (response.data.message && response.data.message === 'Maximum number of Station QCs reached') {
+        Swal.fire({
+          icon: "error",
+          title: "มีการใช้งานสถานี QC สูงสุดแล้ว",
+          text: `ไม่สามารถเพิ่มสถานี QC ได้ กรุณาตรวจสอบสถานีที่ไม่ได้ใช้งานและลบสถานี QC ที่ไม่ใช้งานออก`,
+        });
+        setuuidStationQC(null);
+      } else if (response.data.message && response.data.message === 'Error saving Station QC') {
+        Swal.fire({
+          icon: "error",
+          title: "เกิดข้อผิดพลาดในการบันทึกสถานี QC",
+          text: `กรุณาลองใหม่อีกครั้ง`,
+        });
+        setuuidStationQC(null);
+      }
+      if (response.data && response.data.UUID) {
+        localStorage.setItem("UUIDStationQC", response.data.UUID);
+        setuuidStationQC(response.data.UUID);
+        Swal.fire({
+          icon: "success",
+          title: "บันทึกรหัสสถานี QC สำเร็จ",
+        });
+      }
+      if (response.data.status === false) {
+        Swal.fire({
+          icon: "error",
+          title: "ไม่ได้ทำงานเกิน 20 นาที ",
+          text: `กรุณากรอกข้อมูลช่องพนักงานตรวสอบสินค้าใหม่อีกครั้ง`,
+        });
+        handleClearEmpData("qc-emp");
+      }
+      return response.data;
+    } catch (error) {
+      console.log("Error checking employee station:", error);
+    }
+  }
+
+  const checkEmployeeStation = async (UUID: string) => {
+    if (!UUID) {
+      Swal.fire({
+        icon: "error",
+        title: "กรุณาป้อนรหัสสถานี QC",
+      });
+    }
+    const result = await axios.post(
+      `${import.meta.env.VITE_API_URL_ORDER}/api/fix-station-qc/check-uuid-station`,
+      {
+        emp_code: QCEmp?.dataEmp?.emp_code,
+        UUID,
+      }
+    );
+    if (result.data.status === false && result.data.message === "UUID not found") {
+      localStorage.removeItem("UUIDStationQC");
+      setuuidStationQC(null);
+      handleClearEmpData("qc-emp");
+      Swal.fire({
+        icon: "error",
+        title: "รหัสสถานี QC ไม่ถูกต้อง",
+        text: `ใส่รหัสพนักงาน QC ใหม่อีกครั้ง พร้อมกรอก รหัสสถานี QC ใหม่`,
+      });
+      return;
+    }
+    return result.data;
+  }
+
+  const cleanEmployeeFromStation = async (empCode: string) => {
+    try {
+      const response = await axios.patch(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/station-qc/employee/${empCode}`
+      );
+      if (response.data.status === true || response.status === 200) {
+        fetchStationData();
+      } else {
+        Swal.fire({
+          icon: "error",
+          title: "ล้างข้อมูลไม่สำเร็จ",
+          text: `ไม่สามารถลบพนักงาน ${empCode} ออกจากสถานีได้`,
+        });
+      }
+    } catch (error) {
+      console.log("Error cleaning employee from station:", error);
+      Swal.fire({
+        icon: "error",
+        title: "เกิดข้อผิดพลาด",
+        text: "ไม่สามารถล้างข้อมูลพนักงานได้",
+      });
+    }
+  };
+
+  const deleteStation = async (stationQc: number) => {
+    try {
+      const response = await axios.delete(
+        `${import.meta.env.VITE_API_URL_ORDER}/api/fix-station-qc/delete-station-qc`,
+        {
+          data: { stationQc: stationQc },
+        }
+      );
+      if (response.data.status === true) {
+        Swal.fire({
+          icon: "success",
+          title: "ลบข้อมูลสำเร็จ",
+          text: `ลบข้อมูลสถานี QC ${stationQc} สำเร็จ`,
+        });
+        fetchStationData();
+      } else {
+        Swal.fire({
+          icon: "error",
+          title: "ลบข้อมูลไม่สำเร็จ",
+          text: `ไม่สามารถลบข้อมูลสถานี QC ${stationQc} ได้`,
+        });
+      }
+    } catch (error) {
+      console.log("Error deleting station QC:", error);
+    }
+  };
+
   if (error) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -1451,6 +2327,407 @@ const QCDashboard = () => {
     return (
       <div>
         <div>
+          <Modal
+            isOpen={modalStationInfo}
+            onClose={() => setModalStationInfo(false)}
+          >
+            <div className="flex flex-col text-center justify-center mb-4">
+              <p className="text-3xl font-bold">ข้อมูล Station QC ทั้งหมด</p>
+              <p className="text-lg text-red-600 font-semibold mt-2">
+                การใช้งานร่วมกันสูงสุดไม่เกิน 10 เครื่อง
+              </p>
+            </div>
+
+            {loadingStationData ? (
+              <div className="flex justify-center items-center py-8">
+                <div className="text-xl">กำลังโหลดข้อมูล...</div>
+              </div>
+            ) : stationData.length === 0 ? (
+              <div className="flex flex-col justify-center items-center py-12">
+                <div className="text-gray-500 text-6xl mb-4">📊</div>
+                <div className="text-2xl font-bold text-gray-600 mb-2">ไม่มีข้อมูล Station</div>
+                <div className="text-lg text-gray-500">ไม่พบข้อมูลสถานี QC ในระบบ</div>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse border border-gray-300">
+                  <thead>
+                    <tr className="bg-gray-100">
+                      <th className="border border-gray-300 px-4 py-2 text-left">ลำดับ</th>
+                      <th className="border border-gray-300 px-4 py-2 text-left">รหัสสถานี</th>
+                      <th className="border border-gray-300 px-4 py-2 text-left">รหัสพนักงาน</th>
+                      <th className="border border-gray-300 px-4 py-2 text-center">กิจกรรมล่าสุด</th>
+                      <th className="border border-gray-300 px-4 py-2 text-center">จัดการ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stationData.map((station, index) => (
+                      <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                        <td className="border border-gray-300 px-4 py-2 font-bold">{index + 1}</td>
+                        <td className="border border-gray-300 px-4 py-2">{station.station}</td>
+                        <td className="border border-gray-300 px-4 py-2">{station.emp_code || "ยังไม่มีคนทำงานเครื่องนี้"}</td>
+                        <td className="border border-gray-300 px-4 py-2 text-center text-sm">
+                          {station.updated_at ?
+                            dayjs(station.updated_at).tz('Asia/Bangkok').format('DD/MM/YYYY HH:mm:ss') :
+                            '-'
+                          }
+                        </td>
+                        <td className="border border-gray-300 px-4 py-2 text-center">
+                          <div className="flex gap-2 justify-center">
+                            <button
+                              className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm"
+                              onClick={() => {
+                                setStationToDelete(station.station);
+                                setModalDeleteStation(true);
+                              }}
+                            >
+                              ลบ
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="flex justify-center mt-6">
+              <button
+                className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg"
+                onClick={() => setModalStationInfo(false)}
+              >
+                ปิด
+              </button>
+            </div>
+          </Modal>
+
+          <Modal
+            isOpen={modalDeleteStation}
+            onClose={() => {
+              setModalDeleteStation(false);
+              setStationToDelete(null);
+            }}
+          >
+            <div className="flex flex-col text-center justify-center mb-4">
+              <div className="text-6xl mb-4">⚠️</div>
+              <p className="text-3xl font-bold text-red-600">ยืนยันการลบ Station QC</p>
+              <p className="text-xl mt-4 text-gray-700">
+                คุณต้องการลบ Station QC หมายเลข <span className="font-bold text-red-600">{stationToDelete}</span> หรือไม่?
+              </p>
+              <p className="text-lg text-red-500 mt-2">
+                ⚠️ การดำเนินการนี้ไม่สามารถย้อนกลับได้
+              </p>
+            </div>
+
+            <div className="flex justify-center gap-4 mt-6">
+              <button
+                className="bg-gray-500 hover:bg-gray-600 text-white px-6 py-2 rounded-lg"
+                onClick={() => {
+                  setModalDeleteStation(false);
+                  setStationToDelete(null);
+                }}
+              >
+                ยกเลิก
+              </button>
+              <button
+                className="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg"
+                onClick={() => {
+                  if (stationToDelete !== null) {
+                    deleteStation(stationToDelete);
+                    setModalDeleteStation(false);
+                    setStationToDelete(null);
+                  }
+                }}
+              >
+                ยืนยันการลบ
+              </button>
+            </div>
+          </Modal>
+
+          {/* Modal แจ้งเตือนสินค้ารอ Admin อนุมัติเปลี่ยนชื่อ */}
+          <Modal
+            isOpen={frozenModalOrder !== null}
+            onClose={() => {
+              setFrozenModalOrder(null);
+              inputBarcode.current?.focus();
+            }}
+          >
+            {/* Title */}
+            <div className="flex flex-col items-center gap-1 mb-5">
+              <div className="w-14 h-14 rounded-full bg-amber-100 flex items-center justify-center mb-1">
+                <svg className="w-8 h-8 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900">พบการเปลี่ยนชื่อสินค้า</h2>
+              <span className="text-base text-amber-700 font-medium">
+                รหัส {frozenModalOrder?.product?.product_code}
+              </span>
+            </div>
+
+            {/* Before / After */}
+            <div className="grid grid-cols-[1fr_auto_1fr] gap-3 items-stretch mb-5">
+              {/* ชื่อเดิม */}
+              <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-gray-200 bg-gray-50 p-4">
+                <span className="text-sm font-bold text-gray-400 uppercase tracking-wider">ชื่อเดิม</span>
+                <div className="w-28 h-28 rounded-xl overflow-hidden border border-gray-200 bg-white flex items-center justify-center shrink-0 shadow-sm">
+                  <img
+                    src={(() => {
+                      const url = frozenModalOrder?.product?.product_image_url;
+                      if (!url) return boxnotfound;
+                      if (url.startsWith("..")) return `https://www.wangpharma.com${url.slice(2)}`;
+                      return url;
+                    })()}
+                    alt="ชื่อเดิม"
+                    className="w-full h-full object-contain"
+                    onError={(e) => { e.currentTarget.src = boxnotfound; }}
+                  />
+                </div>
+                <p className="text-base font-semibold text-gray-700 text-center leading-snug">
+                  {frozenModalOrder?.nameChangeRequest?.old_name}
+                </p>
+              </div>
+
+              {/* Arrow */}
+              <div className="flex items-center justify-center">
+                <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </div>
+
+              {/* ชื่อใหม่ */}
+              <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-amber-300 bg-amber-50 p-4">
+                <span className="text-sm font-bold text-amber-500 uppercase tracking-wider">ชื่อใหม่</span>
+                <div className="w-28 h-28 rounded-xl overflow-hidden border border-amber-200 bg-white flex items-center justify-center shrink-0 shadow-sm">
+                  <img
+                    src={(() => {
+                      const url = frozenModalOrder?.product?.product_image_url;
+                      if (!url) return boxnotfound;
+                      if (url.startsWith("..")) return `https://www.wangpharma.com${url.slice(2)}`;
+                      return url;
+                    })()}
+                    alt="ชื่อใหม่"
+                    className="w-full h-full object-contain"
+                    onError={(e) => { e.currentTarget.src = boxnotfound; }}
+                  />
+                </div>
+                <p className="text-base font-bold text-amber-800 text-center leading-snug">
+                  {frozenModalOrder?.nameChangeRequest?.new_name}
+                </p>
+              </div>
+            </div>
+
+            {/* Notice */}
+            <div className="flex items-start gap-3 rounded-xl bg-amber-50 border border-amber-200 px-4 py-4 mb-5">
+              <svg className="w-6 h-6 text-amber-500 shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <div>
+                <p className="text-lg font-bold text-amber-800 leading-snug">
+                  ไม่สามารถ QC รายการนี้ได้
+                </p>
+                <p className="text-base text-amber-700 mt-0.5">
+                  กรุณาติดต่อแอดมินเพื่อยืนยันการเปลี่ยนชื่อสินค้า
+                </p>
+              </div>
+            </div>
+
+            {/* Button */}
+            <button
+              className="w-full py-4 text-xl font-bold rounded-2xl bg-amber-500 hover:bg-amber-600 active:scale-95 text-white transition-all cursor-pointer shadow-md"
+              onClick={() => {
+                setFrozenModalOrder(null);
+                inputBarcode.current?.focus();
+              }}
+            >
+              รับทราบ
+            </button>
+          </Modal>
+
+          <Modal
+            isOpen={modalBarcodeNotFound}
+            onClose={() => setModalBarcodeNotFound(false)}
+          >
+            <div className="flex text-center justify-center">
+              <p className="text-3xl font-bold">แจ้งเตือน</p>
+            </div>
+            <div className="flex text-center justify-center mt-2">
+              <p className="text-3xl text-red-700">
+                สินค้ารายการนี้ไม่มีบาร์โค้ดอยู่ในระบบกรุณากดปุ่มพิมพ์สติกเกอร์จากรายการที่ตรงกันและนำไปแจ้งผู้ดูแลเพื่อแก้ไขต่อไป
+              </p>
+            </div>
+            <div className="flex text-center justify-center mt-2">
+              <img src={ManualPicture} className="w-lg rounded-lg mt-4"></img>
+            </div>
+
+            <div className="flex w-full justify-center mt-3">
+              <button
+                className="bg-green-700 p-3 px-10 text-2xl rounded-lg hover:bg-green-800 text-white drop-shadow-sm cursor-pointer"
+                onClick={() => {
+                  if (modalBarcodeNotFound) {
+                    setModalBarcodeNotFound(false);
+                  }
+                }}
+              >
+                ปิด
+              </button>
+            </div>
+          </Modal>
+          <Modal
+            isOpen={modalPrintStickerOpen}
+            onClose={() => setModalPrintStickerOpen(null)}
+          >
+            <div className="flex text-center justify-center">
+              <p className="text-3xl font-bold">
+                สิ่งที่ต้องทำหลังพิมพ์สติกเกอร์
+              </p>
+            </div>
+            <div className="mt-4 flex justify-center items-center gap-4 my-2">
+              <p className="text-2xl">
+                พิมพ์สติกเกอร์เพื่อส่งต่อให้ผู้ดูแล (พี่มาร์ค)
+                เพื่อทำการแก้ไขข้อมูลสินค้าในระบบ
+              </p>
+            </div>
+            <div className="mt-4 flex justify-center items-center gap-4 my-2">
+              <input
+                type="text"
+                value={barcodeNotFound}
+                onChange={(e) => setBarcodeNotFound(e.target.value)}
+                className="my-2 bg-white text-2xl justify-center text-center rounded-sm p-2 drop-shadow-xl w-lg font-bold border-1 border-gray-300"
+                placeholder="กรุณาสแกนบาร์โค้ดสินค้าที่ไม่มีในระบบ"
+              />
+            </div>
+            <div className="flex w-full justify-center mt-3">
+              <button
+                className={`p-3 text-xl rounded-lg  text-white drop-shadow-sm ${!barcodeNotFound || barcodeNotFound.length < 1
+                  ? "bg-gray-400 cursor-not-allowed"
+                  : "bg-red-700 hover:bg-red-800 cursor-pointer"
+                  }`}
+                disabled={!barcodeNotFound || barcodeNotFound.length < 1}
+                onClick={() => {
+                  if (
+                    modalPrintStickerOpen &&
+                    barcodeNotFound &&
+                    barcodeNotFound.length > 0 &&
+                    productNotFoundBarCode
+                  ) {
+                    setModalPrintStickerOpen(null);
+                    handleRequestProduct(
+                      modalPrintStickerOpen,
+                      productNotFoundBarCode?.pro_code,
+                      productNotFoundBarCode?.pro_name,
+                      barcodeNotFound
+                    );
+                  }
+                }}
+              >
+                พิมพ์สติกเกอร์
+              </button>
+            </div>
+          </Modal>
+          <Modal
+            isOpen={modalProductRequestOpen}
+            onClose={() => setModalProductRequestOpen(null)}
+          >
+            <div className="flex justify-center text-center">
+              <p className="text-3xl font-bold">กรุณาระบุเหตุผลการขอของใหม่</p>
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {REQUEST_REASONS.map((reason) => {
+                const isSelected = selectedReason === reason;
+
+                return (
+                  <label
+                    key={reason}
+                    className={`
+                      flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer
+                      transition-all duration-200 select-none
+                      ${isSelected
+                        ? "border-red-600 bg-red-50 shadow-md"
+                        : "border-gray-300 bg-white hover:border-red-400 hover:bg-gray-50"
+                      }
+                    `}
+                  >
+                    <input
+                      type="radio"
+                      name="request-reason"
+                      value={reason}
+                      checked={isSelected}
+                      onChange={() => {
+                        setSelectedReason(reason);
+                        if (reason !== "อื่น ๆ") setCustomReason("");
+                      }}
+                      className="hidden"
+                    />
+
+                    <div
+                      className={`
+                        w-6 h-6 rounded-full border-2 flex items-center justify-center
+                        ${isSelected ? "border-red-600" : "border-gray-400"}
+                      `}
+                    >
+                      {isSelected && (
+                        <div className="w-3 h-3 rounded-full bg-red-600" />
+                      )}
+                    </div>
+
+                    <span
+                      className={`
+                        text-xl font-semibold
+                        ${isSelected ? "text-red-700" : "text-gray-700"}
+                      `}
+                    >
+                      {reason}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            {selectedReason === "อื่น ๆ" && (
+              <div className="mt-4 flex justify-center">
+                <input
+                  type="text"
+                  value={customReason}
+                  onChange={(e) => setCustomReason(e.target.value)}
+                  className="bg-white text-xl text-center rounded-sm p-2 drop-shadow-xl w-lg font-bold border border-gray-300"
+                  placeholder="กรุณาระบุเหตุผลเพิ่มเติม"
+                />
+              </div>
+            )}
+
+            <div className="flex w-full justify-center mt-6">
+              <button
+                className={`p-3 text-xl rounded-lg text-white drop-shadow-sm
+        ${!finalReason
+                    ? "bg-gray-400 cursor-not-allowed"
+                    : "bg-red-700 hover:bg-red-800"
+                  }`}
+                disabled={!finalReason}
+                onClick={() => {
+                  if (
+                    modalProductRequestOpen &&
+                    finalReason &&
+                    productCodeRequestSticker
+                  ) {
+                    setModalProductRequestOpen(null);
+                    handleRequestProductFloorOne(
+                      productCodeRequestSticker,
+                      finalReason,
+                      modalProductRequestOpen
+                    );
+                  }
+                }}
+              >
+                พิมพ์สติกเกอร์
+              </button>
+            </div>
+          </Modal>
+
           <Modal
             isOpen={modalManageOpen}
             onClose={() => setModalManageOpen(false)}
@@ -1510,8 +2787,8 @@ const QCDashboard = () => {
                   src={
                     dataRequest?.product?.product_image_url.startsWith("..")
                       ? `https://www.wangpharma.com${dataRequest?.product?.product_image_url.slice(
-                          2
-                        )}`
+                        2
+                      )}`
                       : dataRequest?.product?.product_image_url
                   }
                   className="w-lg rounded-lg drop-shadow-2xl"
@@ -1521,15 +2798,14 @@ const QCDashboard = () => {
                 <div>
                   <p className="text-3xl font-bold">
                     {`
-                ${
-                  Array.isArray(dataQC)
-                    ? dataQC.length > 0
-                      ? dataQC[0]?.members?.mem_name
-                      : "ไม่มีเลขบิล"
-                    : dataQC
-                    ? dataQC?.members?.mem_name
-                    : "-"
-                }`}
+                ${Array.isArray(dataQC)
+                        ? dataQC.length > 0
+                          ? dataQC[0]?.members?.mem_name
+                          : "ไม่มีเลขบิล"
+                        : dataQC
+                          ? dataQC?.members?.mem_name
+                          : "-"
+                      }`}
                   </p>
                   <p className="text-4xl font-bold mt-6 line-clamp-2">
                     {dataRequest?.product.product_name}
@@ -1580,11 +2856,10 @@ const QCDashboard = () => {
                   <button
                     id={`OrderConfirmationPopUp`}
                     disabled={Number(amountRequest) === 0}
-                    className={`text-center text-white text-lg p-2 rounded-lg px-8 cursor-pointer ${
-                      Number(amountRequest) > 0
-                        ? "hover:bg-green-800 bg-green-700"
-                        : "hover:bg-gray-600 bg-gray-500"
-                    }`}
+                    className={`text-center text-white text-lg p-2 rounded-lg px-8 cursor-pointer ${Number(amountRequest) > 0
+                      ? "hover:bg-green-800 bg-green-700"
+                      : "hover:bg-gray-600 bg-gray-500"
+                      }`}
                     onClick={() =>
                       handleRequestMore(
                         dataRequest?.so_running ?? null,
@@ -1621,8 +2896,8 @@ const QCDashboard = () => {
                       ? dataQC[0]?.members?.mem_name
                       : "ไม่มีเลขบิล"
                     : dataQC
-                    ? dataQC?.members?.mem_name
-                    : "-"}
+                      ? dataQC?.members?.mem_name
+                      : "-"}
                 </p>
                 <p className="text-lg">
                   {Array.isArray(dataQC)
@@ -1630,8 +2905,8 @@ const QCDashboard = () => {
                       ? dataQC[0]?.members?.mem_code
                       : "ไม่มีเลขบิล"
                     : dataQC
-                    ? dataQC?.members?.mem_code
-                    : "-"}
+                      ? dataQC?.members?.mem_code
+                      : "-"}
                 </p>
               </div>
             </div>
@@ -1641,8 +2916,8 @@ const QCDashboard = () => {
                   src={
                     orderForQC?.product?.product_image_url.startsWith("..")
                       ? `https://www.wangpharma.com${orderForQC?.product?.product_image_url.slice(
-                          2
-                        )}`
+                        2
+                      )}`
                       : orderForQC?.product?.product_image_url || boxnotfound
                   }
                   className="w-sm h-sm drop-shadow-xl rounded-lg"
@@ -1829,8 +3104,8 @@ const QCDashboard = () => {
                     src={
                       url?.product_img_url?.startsWith("..")
                         ? `https://www.wangpharma.com${url?.product_img_url?.slice(
-                            2
-                          )}`
+                          2
+                        )}`
                         : url?.product_img_url || boxnotfound
                     }
                     alt=""
@@ -1864,12 +3139,11 @@ const QCDashboard = () => {
                   !!orderForQC?.product?.lot_priority &&
                   inputLot !== orderForQC.product.lot_priority
                 }
-                className={`mt-4  text-white px-4 py-2 rounded-md cursor-pointer ${
-                  !!orderForQC?.product?.lot_priority &&
+                className={`mt-4  text-white px-4 py-2 rounded-md cursor-pointer ${!!orderForQC?.product?.lot_priority &&
                   inputLot !== orderForQC.product.lot_priority
-                    ? "bg-gray-500"
-                    : "bg-green-600 hover:bg-green-700"
-                }`}
+                  ? "bg-gray-500"
+                  : "bg-green-600 hover:bg-green-700"
+                  }`}
               >
                 ตกลง
               </button>
@@ -1882,6 +3156,486 @@ const QCDashboard = () => {
               </button>
             </div>
           </Modal>
+          <Modal isOpen={rtRequestModalOpen} onClose={() => {
+            setRtRequestModalOpen(false);
+            setIsSavingRT(false);
+            setSelectedRTReason(null);
+            setCustomRTReason("");
+            setRtQcNote("");
+          }}>
+            <div className="space-y-4 py-2">
+              <h2 className="text-lg font-bold text-center">
+                กรุณาแจ้ง
+                {rtPendingData?.employees && rtPendingData.employees.length > 0 ? (
+                  <span className="text-blue-700"> {rtPendingData.employees.map(e => `${e.code} ${e.name}`).join(" | ")} </span>
+                ) : (
+                  "___"
+                )}
+                สำหรับการอนุมัติการส่ง RT
+              </h2>
+
+              {/* คำอธิบายขั้นตอนการดำเนินการ */}
+              <div className="bg-blue-50 p-3 rounded-md text-sm">
+                <p className="font-semibold text-blue-800 mb-2">ขั้นตอนการดำเนินการ:</p>
+                <ol className="text-blue-700 space-y-1">
+                  <li>1. เพิ่มหมายเหตุจากฝั่ง QC</li>
+                  <li>2. แจ้งคนที่เกี่ยวข้องเพื่ออนุมัติคำขอที่จะ RT</li>
+                  <li>3. เมื่อคนที่เกี่ยวข้องอนุมัติให้แล้ว เขาจะให้ใส่รหัสเพื่อที่จะทำให้ระบบทำงานต่อได้</li>
+                </ol>
+                <p className="text-blue-600 font-semibold mt-2">
+                  💡 หมายเหตุ: คุณสามารถกดยกเลิกเพื่อปิดหน้านี้ได้หากไม่ต้องการส่งคำขอ RT
+                </p>
+              </div>
+
+              {rtSelectedProduct && (
+                <>
+                  <div className="bg-gray-50 p-3 rounded-md text-sm space-y-2">
+
+                    {/* ข้อมูลสินค้า */}
+                    <div className="border-t pt-2">
+                      <p className="font-semibold text-gray-700 mb-2">ข้อมูลสินค้า:</p>
+                      <div className="flex items-center gap-3">
+                        {/* รูปภาพสินค้า */}
+                        {(() => {
+                          // ใช้ข้อมูลจาก rtSelectedProduct ที่เก็บไว้
+                          const imageUrl = rtSelectedProduct?.product?.product_image_url;
+
+                          if (imageUrl) {
+                            const fullImageUrl = imageUrl.startsWith("..")
+                              ? `https://www.wangpharma.com${imageUrl.slice(2)}`
+                              : imageUrl;
+
+                            return (
+                              <img
+                                src={fullImageUrl}
+                                alt="รูปภาพสินค้า"
+                                className="w-16 h-16 object-cover rounded-md border shadow-sm"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                            );
+                          }
+                          return (
+                            <div className="w-16 h-16 bg-gray-200 rounded-md flex items-center justify-center">
+                              <span className="text-gray-400 text-xs">ไม่มีรูป</span>
+                            </div>
+                          );
+                        })()}
+
+                        {/* ข้อมูลสินค้า */}
+                        <div className="flex-1">
+                          <p className="text-gray-600">
+                            รหัสสินค้า: <span className="font-medium text-gray-800">
+                              {rtSelectedProduct?.product?.product_code || "-"}
+                            </span>
+                          </p>
+                          <p className="text-gray-600 text-sm mt-1">
+                            ชื่อสินค้า: <span className="font-medium text-gray-800">
+                              {rtSelectedProduct?.product?.product_name || "-"}
+                            </span>
+                          </p>
+                          <p className="text-gray-600 text-sm mt-1">
+                            บาร์โค้ด: <span className="font-medium text-gray-800">
+                              {rtSelectedProduct?.product?.product_barcode || "-"}
+                            </span>
+                          </p>
+                          <div className="flex gap-4 mt-2">
+                            <p className="text-gray-600 text-sm">
+                              ชั้น: <span className="font-medium text-red-600">
+                                {rtSelectedProduct?.product?.product_floor || "-"}
+                              </span>
+                            </p>
+                            <p className="text-gray-600 text-sm">
+                              คงเหลือ: <span className="font-medium text-green-600">
+                                {rtSelectedProduct?.product?.product_stock || "0"} {rtSelectedProduct?.product?.product_unit || ""}
+                              </span>
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ข้อมูลร้าน */}
+                    <div className="border-t pt-2">
+                      <p className="font-semibold text-gray-700 mb-1">ข้อมูลร้าน:</p>
+                      {(() => {
+                        // หาข้อมูลร้านที่ถูกต้องจาก sh_running ที่เกี่ยวข้อง
+                        let storeInfo = null;
+
+                        if (Array.isArray(dataQC) && rtSelectedProduct) {
+                          storeInfo = dataQC.find(item => item.sh_running === rtSelectedProduct.sh_running)?.members;
+                        } else if (dataQC && !Array.isArray(dataQC) && rtSelectedProduct) {
+                          storeInfo = dataQC.sh_running === rtSelectedProduct.sh_running ? dataQC.members : null;
+                        }
+
+                        if (!storeInfo && dataQC) {
+                          // fallback ถ้าหาไม่เจอ ใช้ข้อมูลแรกแทน
+                          storeInfo = Array.isArray(dataQC) ? dataQC[0]?.members : dataQC?.members;
+                        }
+
+                        return (
+                          <>
+                            <p className="text-gray-600">
+                              รหัสร้าน: <span className="font-medium text-gray-800">
+                                {storeInfo?.mem_code || "-"}
+                              </span>
+                            </p>
+                            <p className="text-gray-600">
+                              ชื่อร้าน: <span className="font-medium text-gray-800">
+                                {storeInfo?.mem_name || "-"}
+                              </span>
+                            </p>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-center text-center">
+                    <p className="text-3xl font-bold">กรุณาระบุเหตุผลการขอ RT</p>
+                  </div>
+
+                  <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {RT_NOTE.map((reason) => {
+                      const isSelected = selectedRTReason === reason;
+
+                      return (
+                        <label
+                          key={reason}
+                          className={`
+                      flex items-center gap-4 p-4 rounded-xl border-2 cursor-pointer
+                      transition-all duration-200 select-none
+                      ${isSelected
+                              ? "border-red-600 bg-red-50 shadow-md"
+                              : "border-gray-300 bg-white hover:border-red-400 hover:bg-gray-50"
+                            }
+                    `}
+                        >
+                          <input
+                            type="radio"
+                            name="rt-request-reason"
+                            value={reason}
+                            checked={isSelected}
+                            onChange={() => {
+                              setSelectedRTReason(reason);
+                              if (reason !== "อื่น ๆ") {
+                                setRtQcNote(reason);
+                                setCustomRTReason("");
+                              } else {
+                                setRtQcNote("");
+                              }
+                            }}
+                            className="hidden"
+                          />
+
+                          <div
+                            className={`
+                        w-6 h-6 rounded-full border-2 flex items-center justify-center
+                        ${isSelected ? "border-red-600" : "border-gray-400"}
+                      `}
+                          >
+                            {isSelected && (
+                              <div className="w-3 h-3 rounded-full bg-red-600" />
+                            )}
+                          </div>
+
+                          <span
+                            className={`
+                        text-xl font-semibold
+                        ${isSelected ? "text-red-700" : "text-gray-700"}
+                      `}
+                          >
+                            {reason}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  {selectedRTReason === "อื่น ๆ" && (
+                    <div className="mt-4 flex justify-center">
+                      <input
+                        type="text"
+                        value={customRTReason}
+                        onChange={(e) => {
+                          setCustomRTReason(e.target.value);
+                          setRtQcNote(e.target.value);
+                        }}
+                        className="bg-white text-xl text-center rounded-sm p-2 drop-shadow-xl w-lg font-bold border border-gray-300"
+                        placeholder="กรุณาระบุเหตุผลเพิ่มเติม"
+                      />
+                    </div>
+                  )}
+
+                  <div className="flex w-full justify-center gap-4 mt-6">
+                    <button
+                      onClick={() => {
+                        setRtRequestModalOpen(false);
+                        setSelectedRTReason(null);
+                        setCustomRTReason("");
+                        setRtQcNote("");
+                      }}
+                      className="p-3 text-xl rounded-lg text-white bg-gray-500 hover:bg-gray-600 drop-shadow-sm"
+                    >
+                      ยกเลิก
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (rtSelectedProduct) {
+                          handleRTClick(rtSelectedProduct);
+                        }
+                      }}
+                      disabled={!rtQcNote.trim()}
+                      className={`p-3 text-xl rounded-lg text-white drop-shadow-sm
+                        ${!rtQcNote.trim()
+                          ? "bg-gray-400 cursor-not-allowed"
+                          : "bg-red-700 hover:bg-red-800"
+                        }`}
+                    >
+                      {isSavingRT ? "กำลังบันทึก..." : "ส่งคำขอแจ้ง RT"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </Modal>
+
+          {/* Modal ตรวจสอบสินค้าในโปรโมชั่นก่อนส่ง RT — ปิดไม่ได้ */}
+          {promotionCheckModalOpen && createPortal(
+            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden flex flex-col max-h-[90vh]">
+
+                {/* Header */}
+                <div className="bg-gradient-to-br from-red-500 via-rose-500 to-pink-600 px-8 py-7 flex-shrink-0">
+                  <div className="flex items-center justify-center gap-3 mb-2">
+                    <p className="text-3xl font-black text-white tracking-tight">ต้องส่ง RT สินค้าในโปรโมชั่นด้วย</p>
+                  </div>
+                  <p className="text-center text-base text-red-100 font-medium">หากส่ง RT รายการนี้ยอดการสั่งซื้อจะไม่ถึงจุดที่ได้ของแถม</p>
+                  {/* Progress */}
+                  {(() => {
+                    const doneCount = promotionProCodes.filter(pc => {
+                      const s = order.find(o => o.product.product_code === pc);
+                      if (!s) return true;
+                      if (s.so_already_qc === "RT") return true;
+                      return (promotionBarcodeConfirmed[pc] ?? false) || (promotionRTDone[pc] ?? false);
+                    }).length;
+                    const total = promotionProCodes.length;
+                    return (
+                      <div className="mt-4">
+                        <div className="flex justify-between text-sm text-red-100 mb-1.5">
+                          <span>ดำเนินการแล้ว</span>
+                          <span className="font-bold">{doneCount} / {total} รายการ</span>
+                        </div>
+                        <div className="w-full bg-red-400/40 rounded-full h-2.5">
+                          <div
+                            className="bg-white rounded-full h-2.5 transition-all duration-500"
+                            style={{ width: `${total > 0 ? (doneCount / total) * 100 : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* รายการสินค้า */}
+                <div className="p-6 space-y-4 overflow-y-auto flex-1">
+                  {promotionProCodes.map((proCode) => {
+                    const soItem = order.find(o => o.product.product_code === proCode);
+                    const isAlreadyRT = soItem?.so_already_qc === "RT";
+                    const isQCd = soItem?.so_already_qc === "Yes";
+                    const barcodeConfirmed = promotionBarcodeConfirmed[proCode] ?? false;
+                    const rtDone = promotionRTDone[proCode] ?? false;
+                    const isDone = isAlreadyRT || barcodeConfirmed || rtDone;
+                    // แก้ bug รูปไม่แสดง: ตรวจสอบทั้ง null, undefined, empty string
+                    const rawImageUrl = soItem?.product?.product_image_url;
+                    console.log("So Item : ", soItem);
+                    console.log("Raw image URL for", proCode, ":", rawImageUrl);
+                    const fullImageUrl = rawImageUrl
+                      ? rawImageUrl.startsWith("..")
+                        ? `https://www.wangpharma.com${rawImageUrl.slice(2)}`
+                        : rawImageUrl
+                      : boxnotfound;
+
+                    return (
+                      <div
+                        key={proCode}
+                        className={`rounded-2xl p-4 flex items-center gap-5 transition-all duration-300 ${
+                          isDone
+                            ? "bg-gradient-to-r from-green-50 to-emerald-50 shadow-sm ring-1 ring-green-200"
+                            : isQCd
+                              ? "bg-gradient-to-r from-amber-50 to-yellow-50 shadow-sm ring-1 ring-amber-200"
+                              : "bg-gradient-to-r from-rose-50 to-pink-50 shadow-sm ring-1 ring-rose-200"
+                        }`}
+                      >
+                        {/* รูปสินค้า — ใช้ fallback ป้องกัน null/empty/โหลดไม่ได้ */}
+                        <div className="relative flex-shrink-0">
+                          <img
+                            src={fullImageUrl}
+                            className="w-20 h-20 object-cover rounded-xl shadow-md"
+                            onError={(e) => { e.currentTarget.src = boxnotfound; }}
+                          />
+                          {isDone && (
+                            <div className="absolute -top-2 -right-2 w-7 h-7 bg-green-500 rounded-full flex items-center justify-center shadow-md">
+                              <span className="text-white text-xs font-bold">✓</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* ข้อมูลสินค้า */}
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-gray-800 text-base leading-tight">{proCode}</p>
+                          <p className="text-sm text-gray-500 mt-1 line-clamp-2 leading-relaxed">
+                            {soItem?.product?.product_name ?? "ไม่พบรายการในออเดอร์นี้"}
+                          </p>
+                          <div className="mt-2">
+                            {isDone ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-green-700 bg-green-100 px-3 py-1 rounded-full">
+                                ✓ RT แล้ว
+                              </span>
+                            ) : isQCd ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-700 bg-amber-100 px-3 py-1 rounded-full">
+                                รายการนี้ QC ไปแล้ว กรุณานำสินค้ากลับมาส่ง RT
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-rose-700 bg-rose-100 px-3 py-1 rounded-full">
+                                ยังไม่ได้ส่ง RT
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Action */}
+                        <div className="flex-shrink-0">
+                          {isDone ? (
+                            <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center">
+                              <span className="text-green-600 text-2xl">✓</span>
+                            </div>
+                          ) : !soItem ? (
+                            <span className="text-sm text-gray-400 italic">ไม่พบในออเดอร์</span>
+                          ) : isQCd ? (
+                            <span className="text-sm text-amber-600 font-semibold">รอสแกน ↓</span>
+                          ) : (
+                            <button
+                              className="bg-gradient-to-r from-rose-500 to-pink-600 hover:from-rose-600 hover:to-pink-700 active:scale-95 text-white font-bold px-5 py-2.5 rounded-xl shadow-md cursor-pointer transition-all text-sm"
+                              onClick={async () => {
+                                await executeRT(soItem.so_running);
+                                setPromotionRTDone(prev => ({ ...prev, [proCode]: true }));
+                              }}
+                            >
+                              ส่ง RT
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Footer */}
+                {(() => {
+                  const allDone = promotionProCodes.every(proCode => {
+                    const soItem = order.find(o => o.product.product_code === proCode);
+                    if (!soItem) return true;
+                    if (soItem.so_already_qc === "RT") return true;
+                    return (promotionBarcodeConfirmed[proCode] ?? false) || (promotionRTDone[proCode] ?? false);
+                  });
+                  return (
+                    <div className="px-6 pb-6 pt-4 flex-shrink-0 flex flex-col gap-3">
+                      {/* ช่องสแกนบาร์โค้ดช่องเดียว */}
+                      {promotionProCodes.some(pc => {
+                        const s = order.find(o => o.product.product_code === pc);
+                        return s?.so_already_qc === "Yes" && !(promotionBarcodeConfirmed[pc] ?? false);
+                      }) && (
+                        <div className="bg-amber-50 rounded-2xl p-4 ring-1 ring-amber-200">
+                          <p className="text-sm font-bold text-amber-700 mb-2 text-center">สแกนบาร์โค้ดหรือรหัสสินค้าที่ต้องการยืนยัน</p>
+                          <input
+                            ref={promotionBarcodeRef}
+                            type="text"
+                            value={promotionSharedBarcode}
+                            onChange={(e) => setPromotionSharedBarcode(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                const val = e.currentTarget.value.trim();
+                                if (!val) return;
+
+                                // ค้นหาสินค้าที่ยังรอสแกน (QCd และยังไม่ confirmed)
+                                const matched = promotionProCodes.find(pc => {
+                                  const s = order.find(o => o.product.product_code === pc);
+                                  if (!s) return false;
+                                  if (s.so_already_qc !== "Yes") return false;
+                                  if (promotionBarcodeConfirmed[pc]) return false;
+                                  const barcodes = [
+                                    s.product.product_code,
+                                    s.product.product_barcode,
+                                    s.product.product_barcode2,
+                                    s.product.product_barcode3,
+                                  ].filter(Boolean);
+                                  return barcodes.includes(val);
+                                });
+
+                                if (matched) {
+                                  const soItem = order.find(o => o.product.product_code === matched)!;
+                                  setPromotionBarcodeConfirmed(prev => ({ ...prev, [matched]: true }));
+                                  executeRT(soItem.so_running);
+                                  setPromotionSharedBarcode("");
+                                  promotionBarcodeRef.current?.focus();
+                                } else {
+                                  Swal.fire({
+                                    icon: "error",
+                                    title: "ไม่พบสินค้า",
+                                    text: `ไม่พบรหัสสินค้าหรือบาร์โค้ด "${val}" ในรายการที่รอยืนยัน`,
+                                    timer: 2000,
+                                    showConfirmButton: false,
+                                  });
+                                  setPromotionSharedBarcode("");
+                                  promotionBarcodeRef.current?.focus();
+                                }
+                              }
+                            }}
+                            placeholder="ยิงบาร์โค้ดหรือพิมพ์รหัสสินค้า..."
+                            autoFocus
+                            className="w-full text-center text-base bg-white rounded-xl px-4 py-3 outline-none ring-2 ring-amber-300 focus:ring-amber-500 placeholder-gray-300 transition-all shadow-inner"
+                          />
+                        </div>
+                      )}
+                      <button
+                        disabled={!allDone}
+                        onClick={async () => {
+                          if (pendingRTSoRunning) {
+                            setPromotionCheckModalOpen(false);
+                            await executeRT(pendingRTSoRunning);
+                            setPendingRTSoRunning(null);
+                          }
+                        }}
+                        className={`w-full py-4 rounded-2xl text-white font-black text-lg tracking-wide transition-all duration-300 ${
+                          allDone
+                            ? "bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 shadow-lg cursor-pointer active:scale-[0.98]"
+                            : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                        }`}
+                      >
+                        {allDone ? "ดำเนินการต่อ — ส่ง RT รายการหลัก" : "กรุณาดำเนินการสินค้าทุกรายการก่อน"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setPromotionCheckModalOpen(false);
+                          setPendingRTSoRunning(null);
+                          setPromotionProCodes([]);
+                          setPromotionSharedBarcode("");
+                          setPromotionBarcodeConfirmed({});
+                          setPromotionRTDone({});
+                        }}
+                        className="w-full py-3 rounded-2xl text-gray-500 font-bold text-base bg-gray-100 hover:bg-gray-200 cursor-pointer transition-all duration-200 active:scale-[0.98]"
+                      >
+                        ยกเลิก
+                      </button>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          , document.body)}
+
           <div className="text-center">
             <h1 className="text-2xl font-bold text-center mt-7">
               เส้นทางที่สามารถทำงานได้
@@ -1889,26 +3643,83 @@ const QCDashboard = () => {
             <p className="mt-2 px-10 text-lg">
               {route
                 ? route
-                    ?.filter((r) => !restrictedQC?.includes(r.route_code))
-                    ?.filter((r) => r.route_name !== "อื่นๆ")
-                    .map((r, index, arr) => (
-                      <span key={r.route_code}>
-                        {r.route_name}
-                        {index < arr.length - 1 ? " , " : ""}
-                      </span>
-                    ))
+                  ?.filter((r) => !restrictedQC?.includes(r.route_code))
+                  ?.filter((r) => r.route_name !== "อื่นๆ")
+                  .map((r, index, arr) => (
+                    <span key={r.route_code}>
+                      {r.route_name}
+                      {index < arr.length - 1 ? " , " : ""}
+                    </span>
+                  ))
                 : "กรุณาป้อนรหัสพนักงาน QC เพื่อแสดงเส้นทางที่ทำงานได้"}
             </p>
-            {urgent && <div className="bg-red-800 text-white my-1 py-0.5">
-              <p className=" text-2xl font-bold">รายการด่วน</p>
-              <div className="">
-              {urgent.map((u) => {
-                return (
-                    <p className="font-bold">{u.mem_code} {u.mem_name} [ รายการทั้งหมด {u.amount} บิล ] </p>
-                )
-              })}
+            <div className={`absolute top-0 right-0`}>
+              <button
+                className="mt-4 flex justify-center items-center gap-3 border-2 border-green-500 bg-green-100 rounded-lg p-3 w-fit mx-auto hover:shadow-lg hover:scale-105 transition-transform cursor-pointer mr-10"
+                onClick={() => { setModalStationInfo(true); fetchStationData(); }}>
+                ตรวจสอบสถานี QC
+              </button>
+            </div>
+            {urgent && urgent.length > 0 && (
+              <div className="bg-red-800 text-white my-1 py-0.5">
+                <p className=" text-2xl font-bold">รายการด่วน</p>
+                <div className="">
+                  {urgent.map((u) => {
+                    return (
+                      <p className="font-bold">
+                        {u.mem_code} {u.mem_name} [ รายการทั้งหมด {u.amount} บิล
+                        ]{" "}
+                      </p>
+                    );
+                  })}
+                </div>
               </div>
-            </div>}
+            )}
+            {basketDataForPrint &&
+              basketDataForPrint.length > 0 &&
+              (() => {
+                const data = basketDataForPrint[0];
+
+                return (
+                  <div className="bg-white text-black my-2 py-3 px-4 rounded shadow">
+                    <p className="text-2xl font-bold text-center mb-3">
+                      จำนวนตะกร้าและลัง
+                    </p>
+
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-center font-bold text-xl">
+                      <div className="rounded-lg border-2 border-yellow-400 bg-yellow-100 text-yellow-800 py-3">
+                        <div className="text-2xl mb-1">F2</div>
+                        <div>{data.basket_floor_2} ตะกร้า</div>
+                        <div>{data.box_floor_2} ลัง</div>
+                      </div>
+
+                      <div className="rounded-lg border-2 border-blue-400 bg-blue-100 text-blue-800 py-3">
+                        <div className="text-2xl mb-1">F3</div>
+                        <div>{data.basket_floor_3} ตะกร้า</div>
+                        <div>{data.box_floor_3} ลัง</div>
+                      </div>
+
+                      <div className="rounded-lg border-2 border-red-400 bg-red-100 text-red-800 py-3">
+                        <div className="text-2xl mb-1">F4</div>
+                        <div>{data.basket_floor_4} ตะกร้า</div>
+                        <div>{data.box_floor_4} ลัง</div>
+                      </div>
+
+                      <div className="rounded-lg border-2 border-green-400 bg-green-100 text-green-800 py-3">
+                        <div className="text-2xl mb-1">F5</div>
+                        <div>{data.basket_floor_5} ตะกร้า</div>
+                        <div>{data.box_floor_5} ลัง</div>
+                      </div>
+                      <div className="rounded-lg border-2 border-amber-500 bg-amber-100 text-amber-800 py-3">
+                        <div className="text-2xl mb-1">รวม</div>
+                        <div>{data.basket_count} ตะกร้า</div>
+                        <div>{data.box_count} ลัง</div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
             <div className="w-full mt-5 h-8 px-6">
               <div className="grid grid-cols-6 gap-3">
                 <div className="col-span-1 bg-blue-50 p-4 rounded-xl self-start">
@@ -1931,15 +3742,14 @@ const QCDashboard = () => {
                     const bill = Array.isArray(dataQC)
                       ? dataQC[index]
                       : index === 0
-                      ? dataQC
-                      : null;
+                        ? dataQC
+                        : null;
 
                     return (
                       <div
                         key={index}
-                        className={` p-2 rounded-lg mt-3 ${
-                          isReady ? "bg-blue-400" : "bg-gray-500"
-                        }`}
+                        className={` p-2 rounded-lg mt-3 ${isReady ? "bg-blue-400" : "bg-gray-500"
+                          }`}
                       >
                         <div className="flex justify-between items-center p-1">
                           <p className="text-lg text-white font-bold">
@@ -1961,7 +3771,7 @@ const QCDashboard = () => {
                             disabled={!isReady}
                             ref={index === 0 ? inputBill : null}
                             // readOnly={true}
-                            onChange={(e) => handleChange(e, index)}
+                            onChange={(e) => { handleChange(e, index); checkEmployeeStation(UUIDStationQC || ""); }}
                             onKeyDown={(e) => {
                               if (e.key === "Enter") {
                                 lastInputTimeRef.current = null;
@@ -1980,23 +3790,24 @@ const QCDashboard = () => {
                             }}
                             value={InputValues[index]}
                           ></input>
-                    
+
                           <div className="px-4 py-2 bg-white rounded-sm">
                             <p
-                              className={`font-bold text-2xl ${
-                                isReady ? "text-green-600" : "text-black"
-                              }`}
+                              className={`font-bold text-2xl ${isReady ? "text-green-600" : "text-black"
+                                }`}
                             >
                               {bill ? bill?.shoppingOrders?.length : "-"}
                             </p>
                           </div>
-                          
                         </div>
                         {bill && (
-                            <p className="text-sm text-white mt-1 font-semibold">
-                              {new Date(bill.sh_datetime).toISOString().slice(0, 16).replace("T", " ")}
-                            </p>
-                          )}
+                          <p className="text-sm text-white mt-1 font-semibold">
+                            {new Date(bill.sh_datetime)
+                              .toISOString()
+                              .slice(0, 16)
+                              .replace("T", " ")}
+                          </p>
+                        )}
                       </div>
                     );
                   })}
@@ -2024,7 +3835,7 @@ const QCDashboard = () => {
                               if (Array.isArray(dataQC)) {
                                 return dataQC.length > 0
                                   ? dataQC[0]?.members?.mem_code ||
-                                      "ไม่มีเลขบิล"
+                                  "ไม่มีเลขบิล"
                                   : "ไม่มีเลขบิล";
                               } else if (dataQC) {
                                 return dataQC?.members?.mem_code || "-";
@@ -2039,7 +3850,7 @@ const QCDashboard = () => {
                                 if (Array.isArray(dataQC)) {
                                   return dataQC.length > 0
                                     ? dataQC[0]?.members?.mem_name ||
-                                        "ไม่มีเลขบิล"
+                                    "ไม่มีเลขบิล"
                                     : "ไม่มีเลขบิล";
                                 } else if (dataQC) {
                                   return dataQC?.members?.mem_name || "-";
@@ -2053,7 +3864,7 @@ const QCDashboard = () => {
                                 if (Array.isArray(dataQC)) {
                                   return dataQC.length > 0
                                     ? dataQC[0]?.members?.mem_route
-                                        ?.route_name || "เส้นทาง : อื่นๆ"
+                                      ?.route_name || "เส้นทาง : อื่นๆ"
                                     : "-";
                                 } else if (dataQC) {
                                   return (
@@ -2076,7 +3887,7 @@ const QCDashboard = () => {
                           <p className="text-3xl font-bold">
                             {Array.isArray(dataQC)
                               ? dataQC[0]?.members?.mem_note ??
-                                "ไม่ระบุเงื่อนไข"
+                              "ไม่ระบุเงื่อนไข"
                               : dataQC?.members?.mem_note ?? "ไม่ระบุเงื่อนไข"}
                           </p>
                         </div>
@@ -2159,18 +3970,20 @@ const QCDashboard = () => {
                     <input
                       disabled={!isReady}
                       ref={inputBarcode}
-                      className={`col-span-6  border-4 p-2 px-5 rounded-lg text-4xl text-center ${
-                        isReady
-                          ? `bg-orange-100 border-orange-500`
-                          : `border-gray-500 bg-gray-200 `
-                      }`}
+                      className={`col-span-6  border-4 p-2 px-5 rounded-lg text-4xl text-center ${isReady
+                        ? `bg-orange-100 border-orange-500`
+                        : `border-gray-500 bg-gray-200 `
+                        }`}
                       placeholder="รหัสสินค้า / Barcode"
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
-                          if (e.currentTarget.value === "") {
-                            return;
+                          const val = e.currentTarget.value;
+                          if (!val) return;
+                          if (recycleBoxes.some((b) => b.id === val)) {
+                            handleScanRecycleBox(val);
+                          } else {
+                            handleScan(val);
                           }
-                          handleScan(e.currentTarget.value);
                         }
                       }}
                     ></input>
@@ -2196,7 +4009,7 @@ const QCDashboard = () => {
                         {order?.length > 0 ? (
                           order
                             .sort((a, b) => {
-                              const getPriority = (item: any) => {
+                              const getPriority = (item: ShoppingOrder) => {
                                 if (item.so_already_qc === "RT") return 2;
                                 if (item.so_already_qc === "Yes") return 1;
                                 return 0; // ยังไม่ QC
@@ -2205,17 +4018,28 @@ const QCDashboard = () => {
                               return getPriority(a) - getPriority(b);
                             })
                             .map((so, index) => {
+                              const findProductInQC = so.product?.rtRequests?.find(item => item.status === "Pending") || so.product?.rtRequests?.[0];
+                              // ตัวแปรสำหรับเช็ค RT Request Status
+                              const rtStatus = findProductInQC?.status;
+                              const isApprovedOrDuplicate = rtStatus === "Approved" || rtStatus === "Duplicate";
+                              const isPending = rtStatus === "Pending";
+
+                              const isFrozenByNameChange = so.nameChangeRequest?.status === "pending";
+                              const isNameChangeForceRt = so.nameChangeRequest?.status === "force_rt";
                               return (
                                 <tr
-                                  className={`  border-b-2 border-blue-200 ${
-                                    so.so_already_qc === "Yes"
+                                  className={`  border-b-2 border-blue-200 ${isFrozenByNameChange
+                                    ? "bg-orange-100 hover:bg-orange-100"
+                                    : isNameChangeForceRt
+                                      ? "bg-red-50 hover:bg-red-50"
+                                      : so.so_already_qc === "Yes"
                                       ? "bg-green-100 hover:bg-green-100"
                                       : so.so_already_qc === "RT"
-                                      ? "bg-red-100 hover:bg-red-100"
-                                      : so.so_already_qc === "notComplete"
-                                      ? "bg-yellow-50 hover:bg-yellow-50"
-                                      : "bg-white hover:bg-gray-50"
-                                  }`}
+                                        ? "bg-red-100 hover:bg-red-100"
+                                        : so.so_already_qc === "notComplete"
+                                          ? "bg-yellow-50 hover:bg-yellow-50"
+                                          : "bg-white hover:bg-gray-50"
+                                    }`}
                                 >
                                   <td className="py-4 text-lg border-r-2 border-blue-200 font-semibold px-2">
                                     {index + 1}
@@ -2227,17 +4051,16 @@ const QCDashboard = () => {
                                         {so?.product?.product_floor || "ชั้น 1"}
                                       </p>
                                       <div
-                                        className={`w-4 h-4 sm:w-6 sm:h-6 rounded-full mt-1 ${
-                                          so.product.product_floor === "5"
-                                            ? "bg-green-500"
-                                            : so.product.product_floor === "4"
+                                        className={`w-4 h-4 sm:w-6 sm:h-6 rounded-full mt-1 ${so.product.product_floor === "5"
+                                          ? "bg-green-500"
+                                          : so.product.product_floor === "4"
                                             ? "bg-red-500"
                                             : so.product.product_floor === "3"
-                                            ? "bg-blue-500"
-                                            : so.product.product_floor === "2"
-                                            ? "bg-yellow-500"
-                                            : "bg-gray-400"
-                                        } `}
+                                              ? "bg-blue-500"
+                                              : so.product.product_floor === "2"
+                                                ? "bg-yellow-500"
+                                                : "bg-gray-400"
+                                          } `}
                                       ></div>
                                     </div>
                                   </td>
@@ -2255,19 +4078,18 @@ const QCDashboard = () => {
                                       </p>
 
                                       <p
-                                        className={`text-base font-bold ${
-                                          so?.picking_status === "picking"
-                                            ? "text-green-600"
-                                            : "text-red-600"
-                                        }`}
+                                        className={`text-base font-bold ${so?.picking_status === "picking"
+                                          ? "text-green-600"
+                                          : "text-red-600"
+                                          }`}
                                       >
                                         {so?.picking_status === "pending"
                                           ? "ยังไม่จัด"
                                           : so?.picking_status === "picking"
-                                          ? "จัดแล้ว"
-                                          : so?.picking_status === "request"
-                                          ? "กำลังขอเพิ่ม"
-                                          : so?.picking_status}
+                                            ? "จัดแล้ว"
+                                            : so?.picking_status === "request"
+                                              ? "กำลังขอเพิ่ม"
+                                              : so?.picking_status}
                                       </p>
                                       {!so.product.product_barcode &&
                                         !so.product.product_barcode2 &&
@@ -2322,9 +4144,48 @@ const QCDashboard = () => {
                                       <div className="w-full px-3.5">
                                         <div className="border-t-2 border-blue-200 w-full mb-1.5"></div>
                                       </div>
+                                      {so.is_reward && !isFrozenByNameChange && (
+                                        <div className="flex flex-col items-center gap-1 mb-1">
+                                          <p className="text-green-600 font-bold text-base">รายการของแถม</p>
+                                          <button
+                                            className="bg-green-600 text-white text-sm px-3 py-1 rounded hover:bg-green-700 font-bold"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setSwapTargetSO(so);
+                                              setSwapSelectedProduct(null);
+                                              setSwapNewAmount("");
+                                              setSwapSearchQuery("");
+                                              setSwapSearchResults([]);
+                                              setModalSwapRewardOpen(true);
+                                            }}
+                                          >
+                                            เปลี่ยนของแถม
+                                          </button>
+                                        </div>
+                                      )}
                                       <p className="text-lg pb-1.5">
-                                        {so?.product?.product_name}
+                                        {so.product_name_at_order ?? so.product?.product_name}
+                                        {isFrozenByNameChange && (
+                                          <span className="ml-1 text-sm font-bold text-orange-600 align-middle">
+                                            🔒
+                                          </span>
+                                        )}
+                                        {isNameChangeForceRt && (
+                                          <span className="ml-1 text-sm font-bold text-red-600 align-middle">
+                                            ↩
+                                          </span>
+                                        )}
                                       </p>
+                                      {isFrozenByNameChange && (
+                                        <p className="text-sm font-bold text-orange-600 mt-1">
+                                          สินค้าโดนเปลี่ยนชื่อ รอ Admin อนุมัติ
+                                        </p>
+                                      )}
+                                      {isNameChangeForceRt && (
+                                        <p className="text-sm font-bold text-red-600 mt-1">
+                                          รายการนี้บังคับส่ง RT เนื่องจากสินค้าโดนอัปเดตเป็นอีกรายการ
+                                        </p>
+                                      )}
                                       <div className="w-full px-3.5">
                                         <div className="border-t-2 border-blue-200 w-full mb-1.5"></div>
                                       </div>
@@ -2334,9 +4195,9 @@ const QCDashboard = () => {
                                           <span className="text-black">
                                             {so?.product?.detail[0]?.create_at
                                               ? dayjs(
-                                                  so?.product?.detail[0]
-                                                    ?.create_at
-                                                ).format("DD/MM/YYYY")
+                                                so?.product?.detail[0]
+                                                  ?.create_at
+                                              ).format("DD/MM/YYYY")
                                               : "ไม่มีข้อมูล"}
                                           </span>
                                         </p>
@@ -2403,10 +4264,10 @@ const QCDashboard = () => {
                                           so.so_already_qc === "notComplete"
                                             ? warning
                                             : so.so_already_qc === "Yes"
-                                            ? accept
-                                            : so.so_already_qc === "RT"
-                                            ? box
-                                            : incorect
+                                              ? accept
+                                              : so.so_already_qc === "RT"
+                                                ? box
+                                                : incorect
                                         }
                                         className="w-10"
                                       ></img>
@@ -2423,6 +4284,7 @@ const QCDashboard = () => {
                                             "สติกเกอร์ผิดตะกร้า"
                                           }
                                           value="สติกเกอร์ผิดตะกร้า"
+                                          readOnly
                                           className="text-blue-600"
                                         />
                                         <span className="text-base text-left font-bold text-red-700">
@@ -2436,6 +4298,7 @@ const QCDashboard = () => {
                                           name={`qc_status_${so.so_running}`}
                                           checked={so.so_qc_note === "ขาด"}
                                           value="ขาด"
+                                          readOnly
                                           className="text-blue-600"
                                         />
                                         <span className="text-base font-bold text-blue-800">
@@ -2449,6 +4312,7 @@ const QCDashboard = () => {
                                           name={`qc_status_${so.so_running}`}
                                           checked={so.so_qc_note === "ไม่ครบ"}
                                           value="ไม่ครบ"
+                                          readOnly
                                           className="text-blue-600"
                                         />
                                         <span className="text-base font-bold text-green-700">
@@ -2462,6 +4326,7 @@ const QCDashboard = () => {
                                           name={`qc_status_${so.so_running}`}
                                           checked={so.so_qc_note === "หยิบผิด"}
                                           value="หยิบผิด"
+                                          readOnly
                                           className="text-blue-600"
                                         />
                                         <span className="text-base font-bold text-blue-500">
@@ -2475,6 +4340,7 @@ const QCDashboard = () => {
                                           name={`qc_status_${so.so_running}`}
                                           checked={so.so_qc_note === "หยิบเกิน"}
                                           value="หยิบเกิน"
+                                          readOnly
                                           className="text-blue-600"
                                         />
                                         <span className="text-base font-bold text-orange-500">
@@ -2488,6 +4354,7 @@ const QCDashboard = () => {
                                           name={`qc_status_${so.so_running}`}
                                           checked={so.so_qc_note === "ไม่มีของ"}
                                           value="ไม่มีของ"
+                                          readOnly
                                           className="text-blue-600"
                                         />
                                         <span className="text-base font-bold text-red-600">
@@ -2502,13 +4369,12 @@ const QCDashboard = () => {
                                         <button
                                           id={`reqItem`}
                                           disabled={
-                                            so.picking_status !== "picking"
+                                            so.picking_status !== "picking" || isFrozenByNameChange || isNameChangeForceRt
                                           }
-                                          className={` p-1 rounded-lg text-base text-white cursor-pointer ${
-                                            so.picking_status !== "picking"
-                                              ? "bg-gray-500 hover:bg-gray-600"
-                                              : "bg-blue-500 hover:bg-blue-600"
-                                          } `}
+                                          className={` p-1 rounded-lg text-base text-white cursor-pointer ${so.picking_status !== "picking" || isFrozenByNameChange || isNameChangeForceRt
+                                            ? "bg-gray-500 hover:bg-gray-600"
+                                            : "bg-blue-500 hover:bg-blue-600"
+                                            } `}
                                           onClick={() =>
                                             handleFetchData(
                                               so.so_running,
@@ -2523,33 +4389,70 @@ const QCDashboard = () => {
                                         id={`RTItem`}
                                         disabled={
                                           so.so_already_qc === "RT" ||
-                                          so.so_already_qc === "Yes"
+                                          so.so_already_qc === "Yes" ||
+                                          isFrozenByNameChange
                                         }
-                                        className={` p-1 rounded-lg text-base text-white cursor-pointer ${
-                                          so.so_already_qc === "RT" ||
-                                          so.so_already_qc === "Yes"
-                                            ? "hover:bg-gray-600 bg-gray-500"
-                                            : "hover:bg-red-600 bg-red-500"
-                                        }`}
+                                        className={` p-1 rounded-lg text-base text-white cursor-pointer ${so.so_already_qc === "RT" ||
+                                          so.so_already_qc === "Yes" ||
+                                          isFrozenByNameChange
+                                          ? "hover:bg-gray-600 bg-gray-500" : isApprovedOrDuplicate && featureFlagRTRequest === true
+                                            ? "hover:bg-green-600 bg-green-500" : isPending && featureFlagRTRequest === true
+                                              ? "hover:bg-yellow-600 bg-yellow-500"
+                                              : "hover:bg-red-600 bg-red-500"
+                                          }`}
                                         onClick={() => {
-                                          handleRT(so.so_running);
+                                          if (isNameChangeForceRt) {
+                                            executeRT(so.so_running);
+                                          } else if (isApprovedOrDuplicate && featureFlagRTRequest === true) {
+                                            handleRT(so);
+                                          } else if (isPending && featureFlagRTRequest === true) {
+                                            handleManualRefresh();
+                                          } else {
+                                            handleRTClick(so);
+                                          }
                                         }}
                                       >
                                         {so.so_already_qc === "RT"
                                           ? "ส่ง RT แล้ว"
                                           : so.so_already_qc === "Yes"
-                                          ? "Qc แล้ว"
-                                          : "ส่ง RT"}
+                                            ? "Qc แล้ว"
+                                            : isApprovedOrDuplicate && featureFlagRTRequest === true && so.so_already_qc !== "RT"
+                                              ? "RT ได้แล้ว"
+                                              : isPending && featureFlagRTRequest === true
+                                                ? "รออนุมัติ กดเพื่อโหลดใหม่"
+                                                : "ส่ง RT"}
                                       </button>
 
                                       <button
                                         id={`Floor1`}
-                                        className={`p-1 rounded-lg text-base text-white cursor-pointer bg-blue-500`}
+                                        disabled={isFrozenByNameChange || isNameChangeForceRt}
+                                        className={`p-1 rounded-lg text-base text-white cursor-pointer ${isFrozenByNameChange || isNameChangeForceRt ? "bg-gray-500 hover:bg-gray-600" : "bg-blue-500 hover:bg-blue-600"}`}
                                         onClick={() => {
-                                          handleRequestProduct(so.so_running);
+                                          setModalProductRequestOpen(
+                                            so.so_running
+                                          );
+                                          setProductCodeRequestSticker(
+                                            so.product.product_code
+                                          );
                                         }}
                                       >
                                         จัดชั้น 1
+                                      </button>
+                                      <button
+                                        id={`Floor1`}
+                                        disabled={isFrozenByNameChange || isNameChangeForceRt}
+                                        className={`p-1 rounded-lg text-base text-white cursor-pointer ${isFrozenByNameChange || isNameChangeForceRt ? "bg-gray-500 hover:bg-gray-600" : "bg-blue-500 hover:bg-blue-600"}`}
+                                        onClick={() => {
+                                          setModalPrintStickerOpen(
+                                            so.so_running
+                                          );
+                                          setProductNotFoundBarCode({
+                                            pro_code: so.product.product_code,
+                                            pro_name: so.product.product_name,
+                                          });
+                                        }}
+                                      >
+                                        พิมพ์สติกเกอร์
                                       </button>
                                     </div>
                                   </td>
@@ -2567,10 +4470,20 @@ const QCDashboard = () => {
                       </div>
                     ) : (
                       !dataQC && (
-                        <div className="w-full flex justify-center text-3xl mt-5 text-red-700 font-bold">
-                          <p>
+                        <div>
+                          <p className="w-full flex justify-center text-3xl mt-5 text-red-700 font-bold">
                             กรุณากรอกรหัสพนักงานและรหัสลูกค้าหรือเลขบิลให้เรียบร้อย
                           </p>
+                          <button
+                            className="mt-3 bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-sm text-lg"
+                            onClick={() => {
+                              window.open(
+                                "https://www.wangpharma.com/Akitokung/api/back_up/re_picking_page.php"
+                              );
+                            }}
+                          >
+                            เว็ปสำหรับยิง เมื่อบิลไม่เข้าระบบ
+                          </button>
                         </div>
                       )
                     )}
@@ -2596,8 +4509,8 @@ const QCDashboard = () => {
                                 ".."
                               )
                                 ? `https://www.wangpharma.com${productNotHaveBarcode?.product_image_url.slice(
-                                    2
-                                  )}`
+                                  2
+                                )}`
                                 : productNotHaveBarcode?.product_image_url
                             }
                             className="w-50 rounded-lg drop-shadow-sm"
@@ -2616,6 +4529,73 @@ const QCDashboard = () => {
                       </div>
                     </div>
                   )}
+                  {/* ลังคงเหลือ */}
+                  <div className="rounded-2xl overflow-hidden shadow-sm mb-3">
+                    <div className="bg-blue-500 px-4 py-2">
+                      <p className="text-white font-bold text-base tracking-wide">ลังคงเหลือ</p>
+                    </div>
+                    <div className="bg-white p-3">
+                      {recycleBoxes.length === 0 ? (
+                        <p className="text-base text-gray-400 text-center py-3">ไม่มีข้อมูล</p>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-2">
+                          {recycleBoxes.map((box) => (
+                            <div
+                              key={box.id}
+                              className="flex flex-col items-center justify-center bg-blue-50 border border-blue-100 rounded-xl py-4"
+                            >
+                              <span className="text-4xl font-black text-blue-600">{box.amount}</span>
+                              <span className="text-base font-semibold text-gray-600 mt-1">{box.name}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ลังที่ใช้ */}
+                  <div className="rounded-2xl overflow-hidden shadow-sm mb-3">
+                    <div className="bg-orange-500 px-4 py-2 flex items-center justify-between">
+                      <p className="text-white font-bold text-base tracking-wide">ลังที่ใช้</p>
+                      {scannedBoxes.length > 0 && (
+                        <span className="bg-white text-orange-500 text-sm font-black px-2 py-0.5 rounded-full">
+                          {scannedBoxes.length}
+                        </span>
+                      )}
+                    </div>
+                    <div className="bg-white p-3">
+                      {scannedBoxes.length === 0 ? (
+                        <p className="text-base text-gray-400 text-center py-3">ยังไม่มีลังที่สแกน</p>
+                      ) : (
+                        <div className="space-y-2">
+                          {(() => {
+                            const groups: Record<string, { id: string; name: string; indices: number[] }> = {};
+                            scannedBoxes.forEach((b, i) => {
+                              if (!groups[b.id]) groups[b.id] = { id: b.id, name: b.name, indices: [] };
+                              groups[b.id].indices.push(i);
+                            });
+                            return Object.values(groups).map((group) => (
+                              <div key={group.id}>
+                                <p className="text-base font-bold text-orange-500 uppercase tracking-widest mb-1">{group.name}</p>
+                                {group.indices.map((originalIdx, nth) => (
+                                  <div key={originalIdx} className="flex items-center justify-between bg-orange-50 rounded-xl px-3 py-2 mb-1">
+                                    <span className="text-base font-semibold text-gray-800">ลังที่ {nth + 1}</span>
+                                    <button
+                                      onClick={() => handleRemoveBox(originalIdx)}
+                                      className="bg-red-500 hover:bg-red-600 active:bg-red-700 cursor-pointer text-white text-sm font-semibold px-3 py-1 rounded-lg transition-colors"
+                                    >
+                                      เอาออก
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            ));
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                   <div className=" bg-blue-50 rounded-xl self-start flex-col justify-center py-3">
                     <div className="w-full mt-3">
                       <p>พนักงานเตรียมสินค้า</p>
@@ -2748,7 +4728,7 @@ const QCDashboard = () => {
                         <div
                           className="bg-red-700 text-2xl font-bold text-white py-1 rounded-sm mt-1 hover:bg-red-800 cursor-pointer select-none"
                           onClick={() =>
-                            countBox > 1 && setCountBox((prev) => prev - 1)
+                            countBox > 0 && setCountBox((prev) => prev - 1)
                           }
                         >
                           -
@@ -2759,10 +4739,15 @@ const QCDashboard = () => {
                     <div className="mt-5 px-13">
                       {hasNotQC === 0 && dataQC && (
                         <div>
+                          {countBox < 1 && (
+                            <p className="text-center text-red-600 font-bold text-lg mb-2">
+                              กรุณาเพิ่มจำนวนลัง
+                            </p>
+                          )}
                           <div
-                            className="w-full bg-green-500 text-base text-white py-5 p-1 font-bold rounded-sm hover:bg-green-600 select-none cursor-pointer mb-2 flex justify-center items-center"
+                            className={`w-full text-base text-white py-5 p-1 font-bold rounded-sm mb-2 flex justify-center items-center ${countBox < 1 ? "bg-gray-400 cursor-not-allowed" : "bg-green-500 hover:bg-green-600 select-none cursor-pointer"}`}
                             onClick={() => {
-                              if (!loadingPrinting) {
+                              if (!loadingPrinting && countBox >= 1) {
                                 handlePrintStickerBox();
                               }
                             }}
@@ -2832,19 +4817,18 @@ const QCDashboard = () => {
                         หลังจากพิมพ์สติ๊กเกอร์ติดลังกรุณากดเสร็จสิ้นทุกครั้ง
                       </p>
                       <button
-                        // disabled={hasNotQC !== 0 || loadingSubmit || !hasPrintSticker}
-                        className={`w-full flex justify-center items-center  text-base text-white p-3 font-bold rounded-sm  select-none cursor-pointer mt-4 ${
-                          hasNotQC !== 0 || loadingSubmit || !hasPrintSticker
-                            ? "bg-gray-500 hover:bg-gray-600"
-                            : "bg-green-500 hover:bg-green-600"
-                        }`}
+                        className={`w-full flex justify-center items-center text-base text-white p-3 font-bold rounded-sm select-none cursor-pointer mt-4 ${hasNotQC !== 0 || loadingSubmit || !hasPrintSticker || countBox === 0 || hasFrozenNameChange
+                          ? "bg-gray-500 hover:bg-gray-600"
+                          : "bg-green-500 hover:bg-green-600"
+                          }`}
                         onClick={() => {
+                          if (hasFrozenNameChange) return;
                           if (
                             hasNotQC !== 0 ||
                             loadingSubmit ||
-                            !hasPrintSticker
+                            !hasPrintSticker ||
+                            countBox === 0
                           ) {
-                            // setSubmitFailed(true);
                             setCannotSubmit("ปริ้นสติกเกอร์ก่อนเสร็จสิ้น");
                             return;
                           }
@@ -2857,6 +4841,11 @@ const QCDashboard = () => {
                           "เสร็จสิ้น"
                         )}
                       </button>
+                      {hasFrozenNameChange && (
+                        <p className="mt-2 font-bold text-amber-700 text-sm">
+                          มีสินค้ารอ Admin อนุมัติการเปลี่ยนชื่อ — ไม่สามารถกดเสร็จสิ้นได้
+                        </p>
+                      )}
                       <p className="mt-2 font-bold text-red-700">
                         {submitFailed ? `ยืนยันไม่สำเร็จ ลองอีกครั้ง` : ""}
                       </p>
@@ -2875,8 +4864,155 @@ const QCDashboard = () => {
             </div>
           </div>
         </div>
+        <Reportproblem />
+
+        {/* Modal เปลี่ยนสินค้าของแถม */}
+        {modalSwapRewardOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-4 flex flex-col max-h-[90vh]">
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b-2 border-green-200">
+                <div>
+                  <p className="text-2xl font-bold text-green-700">เปลี่ยนสินค้าของแถม</p>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    เดิม: <span className="font-bold text-gray-700">{swapTargetSO?.product?.product_name}</span>
+                  </p>
+                </div>
+                <button
+                  className="text-gray-400 hover:text-gray-600 text-3xl leading-none"
+                  onClick={() => setModalSwapRewardOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+
+              <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+                {/* Step 1: ค้นหาสินค้า */}
+                <div>
+                  <p className="font-bold text-gray-700 mb-2">
+                    <span className="bg-green-600 text-white rounded-full w-6 h-6 inline-flex items-center justify-center text-sm mr-2">1</span>
+                    ค้นหาสินค้า (ชื่อหรือรหัส)
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="border-2 border-gray-300 rounded-lg px-3 py-2 flex-1 text-base focus:outline-none focus:border-green-500"
+                      placeholder="พิมพ์ชื่อหรือรหัสสินค้า..."
+                      value={swapSearchQuery}
+                      onChange={(e) => handleSwapSearch(e.target.value)}
+                      autoFocus
+                    />
+                    {swapSearchLoading && (
+                      <div className="flex items-center px-2">
+                        <div className="w-5 h-5 border-2 border-green-500 border-t-transparent rounded-full animate-spin"></div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ผลการค้นหา */}
+                  {swapSearchResults.length > 0 && !swapSelectedProduct && (
+                    <div className="mt-2 border-2 border-gray-200 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-100 sticky top-0">
+                          <tr>
+                            <th className="text-left px-3 py-2 font-bold text-gray-600">รหัส</th>
+                            <th className="text-left px-3 py-2 font-bold text-gray-600">ชื่อสินค้า</th>
+                            <th className="text-center px-3 py-2 font-bold text-gray-600">หน่วย</th>
+                            <th className="text-center px-3 py-2 font-bold text-gray-600">คงเหลือ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {swapSearchResults.map((p) => (
+                            <tr
+                              key={p.product_code}
+                              className="border-t border-gray-100 hover:bg-green-50 cursor-pointer"
+                              onClick={() => {
+                                setSwapSelectedProduct(p);
+                                setSwapNewAmount("");
+                              }}
+                            >
+                              <td className="px-3 py-2 text-blue-600 font-mono">{p.product_code}</td>
+                              <td className="px-3 py-2">{p.product_name}</td>
+                              <td className="px-3 py-2 text-center">{p.product_unit ?? "-"}</td>
+                              <td className="px-3 py-2 text-center font-bold">{p.product_stock ?? "-"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {swapSearchQuery && swapSearchResults.length === 0 && !swapSearchLoading && (
+                    <p className="mt-2 text-sm text-gray-400">ไม่พบสินค้า</p>
+                  )}
+                </div>
+
+                {/* Step 2: สินค้าที่เลือก + จำนวน */}
+                {swapSelectedProduct && (
+                  <div className="border-2 border-green-400 rounded-lg p-4 bg-green-50">
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <p className="font-bold text-gray-700 mb-2">
+                          <span className="bg-green-600 text-white rounded-full w-6 h-6 inline-flex items-center justify-center text-sm mr-2">2</span>
+                          สินค้าที่เลือก
+                        </p>
+                        <p className="text-base font-bold text-green-800">{swapSelectedProduct.product_name}</p>
+                        <p className="text-sm text-gray-500">รหัส: {swapSelectedProduct.product_code} | หน่วย: {swapSelectedProduct.product_unit ?? "-"} | คงเหลือ: {swapSelectedProduct.product_stock ?? "-"}</p>
+                      </div>
+                      <button
+                        className="text-gray-400 hover:text-red-500 text-xl leading-none ml-2"
+                        onClick={() => setSwapSelectedProduct(null)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="font-bold text-gray-700 whitespace-nowrap">จำนวน</label>
+                      <input
+                        type="number"
+                        min={1}
+                        className="border-2 border-green-500 rounded-lg px-3 py-2 text-xl font-bold w-32 text-center focus:outline-none focus:border-green-700"
+                        placeholder="0"
+                        value={swapNewAmount}
+                        onChange={(e) => setSwapNewAmount(e.target.value)}
+                        autoFocus
+                      />
+                      <span className="text-gray-600">{swapSelectedProduct.product_unit ?? ""}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="px-6 py-4 border-t-2 border-gray-100 flex gap-3 justify-end">
+                <button
+                  className="px-5 py-2 rounded-lg border-2 border-gray-300 text-gray-600 font-bold hover:bg-gray-50"
+                  onClick={() => setModalSwapRewardOpen(false)}
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  disabled={!swapSelectedProduct || !swapNewAmount || Number(swapNewAmount) <= 0 || swapLoading}
+                  className={`px-6 py-2 rounded-lg font-bold text-white transition-colors ${
+                    swapSelectedProduct && swapNewAmount && Number(swapNewAmount) > 0 && !swapLoading
+                      ? "bg-green-600 hover:bg-green-700"
+                      : "bg-gray-300 cursor-not-allowed"
+                  }`}
+                  onClick={handleSwapRewardConfirm}
+                >
+                  {swapLoading ? (
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin mx-4"></div>
+                  ) : (
+                    "ยืนยันเปลี่ยนของแถม"
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
 };
+
 export default QCDashboard;

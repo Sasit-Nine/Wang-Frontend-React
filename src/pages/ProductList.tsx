@@ -6,7 +6,7 @@ import Clock from "../components/Clock";
 import ProductBox from "../components/ProductBox";
 import { Bounce, toast, ToastContainer } from "react-toastify";
 import axios from "axios";
-import print from "../assets/printing.png";
+import printBucket from "../assets/print_bucket.png";
 import Swal from "sweetalert2";
 
 interface Product {
@@ -32,6 +32,8 @@ export interface ShoppingOrder {
   picking_status: string;
   emp_code_floor_picking: string | null;
   so_picking_time: string | null;
+  product_name_at_order: string | null;
+  name_change_request_id: number | null;
   product: Product;
 }
 
@@ -187,10 +189,12 @@ function ProductList() {
   useEffect(() => {
     if (listproduct) {
       console.log("listproduct:", listproduct);
-      const hasPending = (listproduct?.shoppingHeads ?? []).some((head) =>
+      const hasPending = (listproduct.shoppingHeads ?? []).some((head) =>
         head.shoppingOrders.some((order) => order.picking_status === "pending")
       );
       setCanSubmit(!hasPending);
+    } else {
+      setCanSubmit(false);
     }
     console.log(listproduct);
 
@@ -362,8 +366,139 @@ function ProductList() {
     logout();
   };
 
+   const printStickerSelect = (
+    type: string,
+    product_name: string | null,
+  ) => {
+    Swal.fire({
+      title: `${type}ที่`,
+      input: "number",
+      inputAttributes: {
+        autocapitalize: "off",
+        min: "1"
+      },
+      showCancelButton: true,
+      confirmButtonText: "พิมพ์สติกเกอร์",
+      cancelButtonText: "ยกเลิก",
+      showLoaderOnConfirm: true,
+
+      didOpen: () => {
+        const confirmBtn = Swal.getConfirmButton();
+        const input = Swal.getInput();
+
+        if (confirmBtn) {
+          confirmBtn.disabled = true;
+        }
+
+        input?.addEventListener("input", () => {
+          if (confirmBtn) {
+            confirmBtn.disabled = !input.value;
+          }
+        });
+      },
+
+      preConfirm: async (count_save) => {
+        if (!count_save) {
+          Swal.showValidationMessage("กรุณาระบุจำนวน");
+          return;
+        }
+
+        try {
+          const checkPrintStatus = await axios.post(
+            `${import.meta.env.VITE_API_URL_ORDER}/api/picking/CheckStatusPrint`,
+            {
+              mem_code,
+              type,
+              count: Number(count_save),
+              floor: userInfo?.floor_picking,
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${sessionStorage.getItem(
+                  "access_token"
+                )}`,
+              },
+            }
+          );
+          if (checkPrintStatus.data) {
+            printSticker(
+              mem_code!,
+              type,
+              Number(count_save),
+              product_name
+            );
+          }
+        } catch (error: unknown) {
+          if (axios.isAxiosError(error) && error.response) {
+            const { message } = error.response.data;
+
+            // แยก logic ตาม type จาก backend
+            switch (error.response.data.type) {
+              case "haveTicket": {
+                const result = await Swal.fire({
+                  icon: "warning",
+                  title: "แจ้งเตือน",
+                  text: message,
+                  showCancelButton: true,
+                  confirmButtonText: "พิมพ์ซ้ำ",
+                  cancelButtonText: "ยกเลิก",
+                  reverseButtons: true,
+                });
+
+                if (result.isConfirmed) {
+                  printSticker(
+                    mem_code!,
+                    type,
+                    Number(count_save),
+                    product_name
+                    
+                  );
+                }
+
+                break;
+              }
+
+              case "countTicket":
+                Swal.fire({
+                  icon: "error",
+                  title: "จำนวนไม่ถูกต้อง",
+                  text: message,
+                });
+                break;
+
+              case "createTicketOne":
+                Swal.fire({
+                  icon: "error",
+                  title: "จำนวนไม่ถูกต้อง",
+                  text: message,
+                });
+                break;
+
+              default:
+                Swal.fire({
+                  icon: "error",
+                  title: "เกิดข้อผิดพลาด",
+                  text: message || "ไม่สามารถดำเนินการได้",
+                });
+            }
+          } else {
+            Swal.fire({
+              icon: "error",
+              title: "Server Error",
+              text: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้",
+            });
+          }
+        }
+      },
+      allowOutsideClick: () => !Swal.isLoading()
+    });
+  };
+
   const printSticker = async (
     mem_code: string,
+    type: string,
+    count: number,
+    product_name: string | null
   ) => {
     console.log("printSticker", mem_code);
     try {
@@ -379,6 +514,9 @@ function ProductList() {
           mem_name: listproduct?.mem_name,
           emp_name_request: null,
           emp_code_request: null,
+          type: type ?? null,
+          count: count ?? null,
+          product_name: product_name ?? null,
         },
         {
           headers: {
@@ -441,7 +579,7 @@ function ProductList() {
           console.log(response.data)
 
           return response.data;
-        } catch (error) {
+        } catch {
           Swal.showValidationMessage(`
             กรุณาใส่เฉพาะตัวเลข
         `);
@@ -595,11 +733,12 @@ function ProductList() {
                 <p>{listproduct?.mem_code}</p>&nbsp;
                 <p className="w-40 truncate">{listproduct?.mem_name}</p>
               </div>
+              
               <div
                 className="mr-2"
-                onClick={() => mem_code && printSticker(mem_code)}
+                onClick={() => printStickerSelect("ตะกร้า", null)}
               >
-                <img src={print} className="w-7" />
+                <img src={printBucket} className="w-9" />
               </div>
             </div>
             <div
@@ -779,6 +918,7 @@ function ProductList() {
                                   socket={socket}
                                   handleDoubleClick={handleDoubleClick}
                                   handleClick={handleClick}
+                                  printStickerSelect={printStickerSelect}
                                 />
                               );
                             }

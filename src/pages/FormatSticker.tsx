@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import dayjs from "dayjs";
 import { QRCodeSVG } from "qrcode.react";
+import { useMemo } from "react";
 
 const FormatSticker = () => {
   const ticketId = new URLSearchParams(window.location.search).get("ticketId");
@@ -35,9 +36,18 @@ const FormatSticker = () => {
   const floor_count5 = new URLSearchParams(window.location.search).get(
     "floor_count5"
   );
+  const product_name = new URLSearchParams(window.location.search).get(
+    "product_name"
+  );
+  const type = new URLSearchParams(window.location.search).get("type");
+  const count = new URLSearchParams(window.location.search).get("count");
   const floor = new URLSearchParams(window.location.search).get("floor");
+  const countBox = new URLSearchParams(window.location.search).get("countBox");
+  const note = new URLSearchParams(window.location.search).get(
+    "note"
+  );
 
-  const printData = {
+  const printData = useMemo(() => ({
     emp_code: emp_code ?? null,
     emp_name: emp_name ?? null,
     sh_running:
@@ -56,16 +66,44 @@ const FormatSticker = () => {
     floor_count4: floor_count4 ? Number(floor_count4) : 0,
     floor_count5: floor_count5 ? Number(floor_count5) : 0,
     floor: floor ? Number(floor) : 0,
-  };
+    type: type ?? null,
+    count: count ? Number(count) : null,
+    countBox: countBox ? Number(countBox) : 0,
+    product_name: product_name ?? null,
+    note: note ?? null,
+  }), [
+    emp_code,
+    emp_name,
+    sh_running,
+    mem_code,
+    mem_name,
+    route_code,
+    route_name,
+    emp_code_request,
+    emp_name_request,
+    floor_count2,
+    floor_count3,
+    floor_count4,
+    floor_count5,
+    floor,
+    type,
+    count,
+    countBox,
+    product_name,
+    note
+  ]);
 
   const [loading, setLoading] = useState(true);
+  const printedRef = useRef(false);
 
   console.log(ticketId);
 
   useEffect(() => {
+    if (printedRef.current) return;
     setLoading(false);
     if (!printData) return;
     const printTimeout = setTimeout(() => {
+      printedRef.current = true;
       window.print();
     }, 1000);
     window.onafterprint = () => {
@@ -91,30 +129,32 @@ const FormatSticker = () => {
           <p className="text-[16px]">คนจัด</p>
           <p className="text-[22px] font-bold">{printData.emp_name}</p>
         </div>
-        {printData?.emp_name_request && (
-          <div className="flex items-baseline gap-1.5">
-            <p className="text-[16px]">รายการขอเพิ่ม : </p>
-            <p className="text-[22px] font-bold">
-              {printData?.emp_name_request}
-            </p>
-          </div>
-        )}
-        <div className="flex items-center justify-center">
-          {printData.mem_code && (
-            <QRCodeSVG value={printData.mem_code} size={60} />
+        <div>
+          {printData?.type && printData.count && (
+            <div className="gap-1.5 font-bold text-[20px] flex flex-col justify-end items-end text-right">
+              <p>
+                {printData.type}ที่ {printData.count}
+              </p>
+
+              {printData.product_name && (
+                <p className="text-[16px] truncate w-[200px]">
+                  สินค้า: {printData.product_name}
+                </p>
+              )}
+            </div>
           )}
         </div>
       </div>
 
       {printData.sh_running?.map((_, index: number) => {
-        if (index % 2 !== 0) return null; 
+        if (index % 2 !== 0) return null;
 
         return (
           <div key={index} className="flex justify-between px-2">
-            <div className="border w-full text-center text-[16px]">
+            <div className="border w-full text-center text-[18px]">
               {printData.sh_running?.[index] || ""}
             </div>
-            <div className="border w-full text-center text-[16px]">
+            <div className="border w-full text-center text-[18px]">
               {printData.sh_running?.[index + 1] || ""}
             </div>
           </div>
@@ -139,30 +179,30 @@ const FormatSticker = () => {
           </thead>
           <tbody>
             <tr>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[15px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count2 > 0 ? "✓" : "x"}
               </td>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[15px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count3 > 0 ? "✓" : "x"}
               </td>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[15px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count4 > 0 ? "✓" : "x"}
               </td>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[15px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count5 > 0 ? "✓" : "x"}
               </td>
             </tr>
             <tr>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[17px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count2}
               </td>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[17px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count3}
               </td>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[17px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count4}
               </td>
-              <td className="border text-[12px] pt-0.5 font-bold w-[25%]">
+              <td className="border text-[17px] pt-0.5 font-bold w-[25%]">
                 {printData.floor_count5}
               </td>
             </tr>
@@ -180,20 +220,37 @@ const FormatSticker = () => {
           <p className="flex justify-end text-[14px]">
             {dayjs().format("DD/MM/YYYY HH:mm")}
           </p>
-          <p className="flex justify-end text-[14px]">
-            {printData.route_name ?? "อื่นๆ"}
-          </p>
         </div>
       </div>
+      <div className="flex justify-between align-top mx-4">
+        <div className="flex items-start justify-center mt-1">
+          {printData.mem_code && (
+            <QRCodeSVG value={printData.mem_code} size={60} />
+          )}
+        </div>
 
-      <div className="text-center">
-        <p className="text-[20px] font-bold">{printData.mem_code}</p>
-        <p className="text-[18px]">{printData.mem_name}</p>
+        <div className="text-right">
+          <p className="text-[30px]">{printData.route_name ?? "อื่นๆ"}</p>
+          <p className="text-[30px] font-bold">{printData.mem_code}</p>
+        </div>
+      </div>
+      <div className="text-right mr-3">
+        <p className="text-[30px]">{printData.mem_name}</p>
       </div>
 
-      <div className="flex justify-between pl-2 text-[18px] font-bold">
+      {/* <div className="flex justify-between pl-2 text-[28px] font-bold">
         <p>{printData.route_name ?? "อื่นๆ"}</p>
+      </div> */}
+
+      {printData.type !== "ตะกร้า" ? null : <div>
+        <p className="text-[20px] font-bold px-2">
+          {!countBox ? '' : `จำนวนลังที่พิมพ์: ${countBox}`}
+        </p>
       </div>
+      }
+      <p className="text-[20px] font-bold px-2">
+          {!note ? '' : `${note}`}
+        </p>
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Socket, io } from "socket.io-client";
 
 export interface TicketItem {
@@ -17,6 +17,12 @@ export interface TicketItem {
   floor_count3: number;
   floor_count4: number;
   floor_count5: number;
+  type: string | null;
+  count: number | null;
+  status: string;
+  update_at: string;
+  product_name: string | null;
+  note: string | null;
 }
 
 const StickerPrint = () => {
@@ -26,7 +32,10 @@ const StickerPrint = () => {
   const [data, setData] = useState<TicketItem[]>([]);
   const [listPrintTicket, setListPrint] = useState<TicketItem[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [latestTicket, setLatestTicket] = useState<string | null>(null);
+  const [updatedAt, setUpdatedAt] = useState("");
+  const [countBox, setCountBox] = useState(0);
+  const [lastNotePrint, setLastNotePrint] = useState<string | null>(null);
+  const openedTicketIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     const token = sessionStorage.getItem("access_token");
@@ -67,62 +76,86 @@ const StickerPrint = () => {
 
   useEffect(() => {
     const listByFloor = data.filter(
-      (item) => item.floor === Number(selectFloor)
+      (item) => item.floor === Number(selectFloor) && item.status === "pending"
     );
     setListPrint(listByFloor);
+
+    const floorMemPairs = new Set(
+      listByFloor.map(item => `${item.floor}_${item.mem_code}`)
+    );
+
+    const filteredData = data
+      .filter(item =>
+        floorMemPairs.has(`${item.floor}_${item.mem_code}`) &&
+        item.type === "ลัง"
+      )
+      .map(item => item.count ?? 0);
+
+    const maxCount = filteredData.length > 0 ? Math.max(...filteredData) : 0;
+    setCountBox(maxCount);
+    console.log("Max Count Box:", maxCount);
+
   }, [selectFloor, data]);
 
   useEffect(() => {
-    if (listPrintTicket.length > 0 && currentIndex < listPrintTicket.length && (listPrintTicket[currentIndex].ticket_id.toString() !== latestTicket)) {
-      setLatestTicket(listPrintTicket[currentIndex].ticket_id.toString())
+    if (listPrintTicket.length > 0 && currentIndex < listPrintTicket.length && (!listPrintTicket[currentIndex].note ? updatedAt !== listPrintTicket[currentIndex].update_at : true) && (lastNotePrint ? listPrintTicket[currentIndex].note !== lastNotePrint : true)) {
       const currentTicket = listPrintTicket[currentIndex];
+      console.log("Current Ticket:", currentTicket);
       console.log(`Current Index: ${currentIndex}`);
+      console.log('List Print Ticket length:', listPrintTicket.length);
+      if (openedTicketIdRef.current === currentTicket.ticket_id) return;
+      openedTicketIdRef.current = currentTicket.ticket_id;
       localStorage.removeItem("print_status");
-
-      window.open(
-        `/format-sticker?ticketId=${currentTicket.ticket_id}&sh_running=${
-          currentTicket.sh_running
-        }&mem_code=${currentTicket.mem_code}&mem_name=${
-          currentTicket.mem_name
-        }&route_code=${currentTicket.route_code}&route_name=${
-          currentTicket.route_name
-        }&emp_code=${currentTicket.emp_code}&emp_name=${
-          currentTicket.emp_name
-        }${
-          currentTicket.emp_code_request
+      if (currentTicket.type === "recycle-box") {
+        window.open(
+          `/recycle-box-barcode?uuid=${currentTicket.mem_code}&name=${encodeURIComponent(currentTicket.mem_name)}`,
+          "_blank"
+        );
+      } else {
+        window.open(
+          `/format-sticker?ticketId=${currentTicket.ticket_id}&sh_running=${currentTicket.sh_running
+          }&mem_code=${currentTicket.mem_code}&mem_name=${currentTicket.mem_name
+          }&route_code=${currentTicket.route_code}&route_name=${currentTicket.route_name
+          }&emp_code=${currentTicket.emp_code}&emp_name=${currentTicket.emp_name
+          }${currentTicket.emp_code_request
             ? `&emp_code_request=${currentTicket.emp_code_request}`
             : ""
-        }${
-          currentTicket.emp_name_request
+          }${currentTicket.emp_name_request
             ? `&emp_name_request=${currentTicket.emp_name_request}`
             : ""
-        }${
-          currentTicket.floor_count2
+          }${currentTicket.floor_count2
             ? `&floor_count2=${currentTicket.floor_count2}`
             : ""
-        }${
-          currentTicket.floor_count3
+          }${currentTicket.floor_count3
             ? `&floor_count3=${currentTicket.floor_count3}`
             : ""
-        }${
-          currentTicket.floor_count4
+          }${currentTicket.floor_count4
             ? `&floor_count4=${currentTicket.floor_count4}`
             : ""
-        }${
-          currentTicket.floor_count5
+          }${currentTicket.floor_count5
             ? `&floor_count5=${currentTicket.floor_count5}`
             : ""
-        }${currentTicket.floor ? `&floor=${currentTicket.floor}` : ""}`,
-        "_blank"
-      );
-      if (
-        listPrintTicket.length > 0 &&
-        currentIndex >= listPrintTicket.length
-      ) {
-        setCurrentIndex(0);
+          }${currentTicket.type
+            ? `&type=${currentTicket.type}`
+            : ""
+          }${currentTicket.count
+            ? `&count=${currentTicket.count}`
+            : ""
+          }${currentTicket.floor ? `&floor=${currentTicket.floor}` : ""}
+          ${currentTicket.product_name
+            ? `&product_name=${encodeURIComponent(currentTicket.product_name)}`
+            : ""
+          }${currentTicket.note
+            ? `&note=${encodeURIComponent(currentTicket.note)}`
+            : ""
+          }${countBox ? `&countBox=${countBox}` : ""}`,
+          "_blank"
+        );
       }
+    } else if (currentIndex >= listPrintTicket.length && listPrintTicket.length > 0) {
+      setCurrentIndex(0);
     }
-  }, [listPrintTicket, selectFloor]);
+  }, [listPrintTicket, selectFloor, countBox]);
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
@@ -136,7 +169,14 @@ const StickerPrint = () => {
           } else {
             console.warn("❌ Socket not connected");
           }
+          openedTicketIdRef.current = null;
           setCurrentIndex((prev) => prev + 1);
+          setUpdatedAt(printedTicket.update_at);
+          if (printedTicket.type === "ลัง") {
+            setLastNotePrint(printedTicket.note || null);
+          } else {
+            setLastNotePrint(null);
+          }
         }
       }
     };

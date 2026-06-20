@@ -35,8 +35,47 @@ import RequestProduct from "./pages/RequestProduct";
 import RouteManage from "./pages/RouteManage";
 import DashboardRoute from "./pages/DashboardRoute";
 import LoopDashBoard from "./pages/LoopDashboard";
+import StackedAreaChart from "./pages/Charts";
+import { io } from "socket.io-client";
+import { useEffect } from "react";
+import UploadStock from "./pages/UploadStock";
+import RTApproval from "./pages/RTApproval";
+import WorklogPage from "./pages/WorklogPage";
+import TaskApprovalPage from "./pages/TaskApprovalPage";
+import RecycleBoxBarcode from "./pages/RecycleBoxBarcode";
+import ReturnReceipt from "./pages/ReturnReceipt";
+import ReturnReceiptPrint from "./pages/ReturnReceiptPrint";
+import ProductNameChangeApproval from "./pages/ProductNameChangeApproval";
+import DailyIpLogsPage from "./pages/DailyIpLogsPage";
 
 function App() {
+  useEffect(() => {
+    console.log("Connecting to reload socket...");
+
+    const newSocket = io(
+      `${import.meta.env.VITE_API_URL_ORDER}/socket/reload-page`,
+      {
+        path: "/socket/reload-page",
+      }
+    );
+
+    newSocket.on("connect", () => {
+      console.log("Connected to reload socket");
+    });
+
+    newSocket.on("reloadPage", () => {
+      console.log("Reload event received — refreshing...");
+      window.location.reload();
+    });
+
+    newSocket.on("disconnect", () => {
+      console.log("Disconnected from reload socket");
+    });
+
+    return () => {
+      newSocket.close();
+    };
+  }, []);
   return (
     <>
       <Router>
@@ -94,9 +133,10 @@ function App() {
           <Route path="/fragileprint" element={<FragilePrint />} />
           <Route path="/othercourier" element={<OtherCourier />} />
           <Route path="/basket-sticker" element={<BasketSticker />} />
+          <Route path="/recycle-box-barcode" element={<RecycleBoxBarcode />} />
           <Route path="/print-rt" element={<PrintRT />} />
           <Route path="/print-request" element={<RequestProduct />} />
-          <Route path="/dashboard-qc" element={<QCDashboard />} />
+          <Route path="/dashboard-qc" element={<RequireAuth><QCDashboard /></RequireAuth>} />
           <Route path="/special" element={<SpecialExpressPrint />} />
           <Route
             path="/invoice-all"
@@ -271,9 +311,9 @@ function App() {
             element={
               <div>
                 <Navbar />
-                {/* <RequireAuth> */}
-                <RouteManage />
-                {/* </RequireAuth> */}
+                <RequireAuth>
+                  <RouteManage />
+                </RequireAuth>
               </div>
             }
           />
@@ -291,6 +331,83 @@ function App() {
             element={
               <div>
                 <DashboardRoute />
+              </div>
+            }
+          />
+          <Route
+            path="/update-stock"
+            element={
+              <div>
+                <Navbar />
+                <RequireAuth>
+                  <UploadStock />
+                </RequireAuth>
+              </div>
+            }
+          />
+          <Route
+            path="/charts"
+            element={
+              <div>
+                <StackedAreaChart />
+              </div>
+            }
+          />
+          <Route
+            path="/rt-approval"
+            element={
+              <RequireAuth>
+                <RTApproval />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/product-name-change-approval"
+            element={
+              <RequireAuth>
+                <ProductNameChangeApproval />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/return-receipt"
+            element={
+              <div>
+                <Navbar />
+                <RequireAuth>
+                  <ReturnReceipt />
+                </RequireAuth>
+              </div>
+            }
+          />
+          <Route
+            path="/return-receipt-print"
+            element={<ReturnReceiptPrint />}
+          />
+          <Route  
+            path="/worklog"
+            element={
+              <RequireAuth>
+                <WorklogPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/task-approval"
+            element={
+              <RequireAuth>
+                <TaskApprovalPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/daily-ip-logs"
+            element={
+              <div>
+                <Navbar />
+                <RequireAuth>
+                  <DailyIpLogsPage />
+                </RequireAuth>
               </div>
             }
           />
